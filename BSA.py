@@ -5,11 +5,12 @@ import pandas as pd
 import numpy as np
 from itertools import product
 
-
 from ExcelReportBuilder import ExcelReportBuilder
+from GraphUtils import GraphManipulations
+
 from factor_analyzer import FactorAnalyzer
 
-from pgmpy.estimators import HillClimbSearch
+from pgmpy.estimators import HillClimbSearch, TreeSearch
 from pgmpy.estimators import BicScore
 
 import statsmodels.api as sm
@@ -42,6 +43,12 @@ def CalcBayesNetworkGraph(df: pd.DataFrame) -> io.BytesIO:
     stream = io.BytesIO()
     model.to_graphviz().draw(stream, format='png', prog='dot')
     return stream
+
+def CalcBayesNetwork(df: pd.DataFrame):
+    return HillClimbSearch(df).estimate(scoring_method=BicScore(df))
+
+def CalcTree(df: pd.DataFrame, root_node: str): 
+    return TreeSearch(df, root_node=root_node).estimate(estimator_type='chow-liu')
 
 
 ##################################################
@@ -89,23 +96,57 @@ class ExploratoryAnalysis:
     mdf_columns = ['GRATIFICATION', 'DISTINCTION', 'AMPLIFICATION']
     power_premium_columns = ['POWER', 'PREMIUM']
 
+    mdf_graph = [
+        ('EMOTIONAL', 'GRATIFICATION'),
+        ('RATIONAL', 'GRATIFICATION'),
+        ('LEADERSHIP', 'GRATIFICATION'),
+        ('UNIQUENESS', 'GRATIFICATION'),
+        ('EMOTIONAL', 'DISTINCTION'),
+        ('RATIONAL', 'DISTINCTION'),
+        ('LEADERSHIP', 'DISTINCTION'),
+        ('UNIQUENESS', 'DISTINCTION'),
+        ('EMOTIONAL', 'AMPLIFICATION'),
+        ('RATIONAL', 'AMPLIFICATION'),
+        ('LEADERSHIP', 'AMPLIFICATION'),
+        ('UNIQUENESS', 'AMPLIFICATION'),
+        ('GRATIFICATION', 'POWER'),
+        ('DISTINCTION', 'POWER'),
+        ('AMPLIFICATION', 'POWER')]
+
     image_sets = ExtOrderedDict()
+    graphs_for_sets: dict[str: GraphManipulations] = {}
 
     worksheet_image = 'image_sets'
     worksheet_data = 'data'
+    worksheet_model = 'model_spec'
+
+    
 
     def __init__(self):
         self.image_sets.clear()
+        self.graphs_for_sets.clear()
 
     def __EquityColumns(self):
         return self.factor_columns + self.mdf_columns + self.power_premium_columns
-
-    def __ReadImageSets(self): 
+    
+    def __ReadModelSpec(self): 
         self.image_sets.clear()
+        self.graphs_for_sets.clear()
         data = pd.read_excel(self.data_file_name, sheet_name=self.worksheet_image, index_col=0)
         for set_ in data.columns: 
             if data[set_].notna().any(): 
                 self.image_sets[set_] = data[set_].dropna().to_dict()
+                self.graphs_for_sets[set_] = None # will GraphManipulation object
+
+    def __ReadImageSets(self): 
+        self.image_sets.clear()
+        self.graphs_for_sets.clear()
+        data = pd.read_excel(self.data_file_name, sheet_name=self.worksheet_image, index_col=0)
+        for set_ in data.columns: 
+            if data[set_].notna().any(): 
+                self.image_sets[set_] = data[set_].dropna().to_dict()
+                self.graphs_for_sets[set_] = None # will GraphManipulation object
+
 
     def FullImageList(self):
         return self.image_sets.top()[1]
@@ -152,6 +193,9 @@ class ExploratoryAnalysis:
             raise ValueError("Not all MDF variables are present in the data. Expected: " + str(mdf_renamer.keys()))
         self.clean_mdf_data = data[mdf_renamer.keys()].rename(columns=mdf_renamer)
 
+    def CleanSOEandMDFData(self): 
+        return pd.concat([self.clean_mdf_data, self.clean_soe_data], axis=1)
+
     def ReadDataFile(self, data_file_name):
         self.data_file_name = data_file_name
         self.__ReadImageSets()
@@ -186,9 +230,12 @@ class ExploratoryAnalysis:
         print("SOE to equity correlations - Ok")
 
     def ReportBayesNetworkGraphs(self): 
-        for name, set_ in self.image_sets.items():
-            self.reporter.AddImage(CalcBayesNetworkGraph(self.clean_soe_data[set_.values()]), 'Graphs_{}'.format(name))
-            self.reporter.AddImage(CalcBayesNetworkGraph(self.clean_soe_data[set_.values()].mul(10).round()), 'Graphs_{}'.format(name), "D5")
+        for set_name, set_ in self.image_sets.items():
+            G1 = GraphManipulations(CalcBayesNetwork(self.clean_soe_data[set_.values()]))
+            self.reporter.AddImage(G1.Plot(), 'Graphs_{}'.format(set_name))
+            
+            self.graphs_for_sets[set_name] = GraphManipulations(CalcBayesNetwork(self.clean_soe_data[set_.values()].mul(10).round()))
+            self.reporter.AddImage(self.graphs_for_sets[set_name].Plot(), 'Graphs_{}'.format(set_name), "AA1")
         print("Bayes nets graphs - Ok")
     
 
@@ -198,22 +245,38 @@ class ExploratoryAnalysis:
         for set_name, set_ in self.image_sets.items():
             X = XX[set_.values()]
             for target_name, y in Y.items():
-                self.reporter.AddTable(
-                    CalcLinRegWithVarSelect(X, y), 'FOD {}'.format(set_name)
-                )
+                fod = CalcLinRegWithVarSelect(X, y)
+                self.reporter.AddTable(fod, 'FOD {}'.format(set_name))
+                if target_name in self.factor_columns:
+                    self.graphs_for_sets[set_name].AddEdges([(ix, target_name) for ix, val in fod['Final Selection'].items() if val])
         print("First Order Drivers - Ok")
 
+    def ReportGraphs(self):
+        self.ReportBayesNetworkGraphs()
+        self.ReportFirstOrderDrivers() 
+        data = self.CleanSOEandMDFData()
+        for set_name, set_ in self.image_sets.items():
+            self.graphs_for_sets[set_name].AddEdges(self.mdf_graph)
+            self.graphs_for_sets[set_name].AppendPLSWeights(data) 
+            self.reporter.AddImage(self.graphs_for_sets[set_name].Plot(), 'BSA_{}'.format(set_name))
 
+    def ReportTreeGraphs(self):
+        for col in self.clean_soe_data: 
+            self.reporter.AddImage(
+                GraphManipulations(CalcTree(self.clean_soe_data, col)).Plot(), 
+                'TREE {}'.format(col)
+                )
     
     def ExploratoryReport(self, data_file_name):
         self.reporter = ExcelReportBuilder(data_file_name.split('.')[0] + '_report.xlsx')
         self.ReadDataFile(data_file_name)
         
-        #self.ReportImageCrossCorrelations()
-        #self.ReportFAs()
-        #self.ReportSOEToEquityCorrelations()
-        #self.ReportBayesNetworkGraphs()
-        self.ReportFirstOrderDrivers()
+        self.ReportImageCrossCorrelations()
+        self.ReportFAs()
+        self.ReportSOEToEquityCorrelations()
+        
+        self.ReportGraphs()
+        self.ReportTreeGraphs()
 
         self.reporter.SaveToFile()
         
