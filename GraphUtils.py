@@ -150,9 +150,9 @@ class PLSPMModel:
 
 
 class GraphManipulations:
-    graph: pgv.AGraph | None
-    plspm: PLSPMModel | None 
-    model_spec: ModelSpec | None
+    graph: pgv.AGraph | None = None
+    plspm: PLSPMModel | None = None
+    model_spec: ModelSpec | None = None
 
     def __FromEdges(self, edges: list):
         self.graph = pgv.AGraph(directed=True)
@@ -163,15 +163,12 @@ class GraphManipulations:
             self.graph = graph.copy()
         elif isinstance(graph, list): 
             self.__FromEdges(graph)
-            #self.graph = pgv.AGraph(directed=True)
-            #self.graph.add_edges_from(graph)
         elif isinstance(graph, ModelSpec):
             self.model_spec = graph
             self.__FromEdges(graph.edges)
         else: 
             self.graph = graph.to_graphviz()
-        
-        self.plspm = None
+
 
     def ResetModels(self):
         self.plspm = None
@@ -213,8 +210,8 @@ class GraphManipulations:
             self.AddEdgeWeight(edge, self.plspm.GetEdgeCoef(edge))
         return self
     
-
-    def SubgraphFrom(self, node: str): 
+    
+    def SubgraphFromNodes(self, node: list[str]): 
 
         def _walk_down(graph: pgv.AGraph, node: str, func):
             for e in graph.out_edges(node):
@@ -224,42 +221,54 @@ class GraphManipulations:
         def _walk_up(graph: pgv.AGraph, node: str, func):
             for e in graph.in_edges(node):
                 func(e)
-                _walk_down(graph, e[0], func)
+                _walk_up(graph, e[0], func)
 
         def _copy_paste_edge(edge: pgv.agraph.Edge, graph: pgv.AGraph):
             graph.add_edge(*edge, label=edge.attr['label'], penwidth=edge.attr['penwidth'])
         
+        if isinstance(node, str): 
+            node = [node]
+        elif not isinstance(node, list):
+            raise ValueError(".SubgraphFromNod: Wrong nodes definition")
+        
         sub_graph = pgv.AGraph(directed=True)
-        _walk_down(self.graph, node, lambda x: _copy_paste_edge(x, sub_graph))
-        _walk_up(self.graph, node,   lambda x: _copy_paste_edge(x, sub_graph))
+        
+        for n in node: 
+            _walk_down(self.graph, n, lambda x: _copy_paste_edge(x, sub_graph))
+            _walk_up(self.graph, n,   lambda x: _copy_paste_edge(x, sub_graph))
 
-        key_node = sub_graph.get_node(node)
-        key_node.attr['style'] = 'filled'
-        key_node.attr['fillcolor'] = 'black'
-        key_node.attr['fontcolor'] = 'white'
-        key_node.attr['fontsize'] = 24
+            key_node = sub_graph.get_node(n)
+            key_node.attr['style'] = 'filled'
+            key_node.attr['fillcolor'] = 'black'
+            key_node.attr['fontcolor'] = 'white'
+            key_node.attr['fontsize'] = 24
 
         return GraphManipulations(sub_graph)
     
-    def RouteLenTo(self, node: str):
+    def RoutesLen(self, from_: str, to_: list[str] | str):
+        if isinstance(to_, str): 
+            to_ = [to_]
+        elif not isinstance(to_, list):
+            raise ValueError(".RouteLen: Wrong to_ definition")
+        
         total_route_len = 0
         
         def _walk_down(graph: pgv.AGraph, node: str, carry):
             nonlocal total_route_len
             for e in graph.out_edges(node):
                 carry_to_pass = carry * float(e.attr['penwidth']) / 10
-                if e[1] in ['EMOTIONAL', 'RATIONAL', 'LEADERSHIP', 'UNIQUENESS']: 
+                if e[1] in to_: 
                     total_route_len += carry_to_pass
                 else:
                     _walk_down(graph, e[1], carry_to_pass)
 
-        _walk_down(self.graph, node, 1)
+        _walk_down(self.graph, from_, 1)
         return total_route_len
     
-    def AllRouteLengthTo(self):
+    def RoutesLenFromAllNodes(self, to_: list[str] | str):
         result = {}
         for node in self.graph.nodes():
-            result[node] = self.RouteLenTo(node)
+            result[node] = self.RoutesLen(node, to_)
         return result
 
         

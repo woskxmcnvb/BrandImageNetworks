@@ -18,6 +18,49 @@ from sklearn.feature_selection import SequentialFeatureSelector
 from sklearn.feature_selection import RFECV
 from sklearn.linear_model import LinearRegression
 
+##############################################################
+###################### NAMESPACE #############################
+##############################################################
+
+FACTORS = ['EMOTIONAL', 'RATIONAL', 'LEADERSHIP', 'UNIQUENESS']
+MDFS = ['GRATIFICATION', 'DISTINCTION', 'AMPLIFICATION']
+POWER_PREMIUM = ['POWER', 'PREMIUM']
+
+MDF_GRAPH = [
+    ('EMOTIONAL', 'GRATIFICATION'),
+    ('RATIONAL', 'GRATIFICATION'),
+    ('LEADERSHIP', 'GRATIFICATION'),
+    ('UNIQUENESS', 'GRATIFICATION'),
+    ('EMOTIONAL', 'DISTINCTION'),
+    ('RATIONAL', 'DISTINCTION'),
+    ('LEADERSHIP', 'DISTINCTION'),
+    ('UNIQUENESS', 'DISTINCTION'),
+    ('EMOTIONAL', 'AMPLIFICATION'),
+    ('RATIONAL', 'AMPLIFICATION'),
+    ('LEADERSHIP', 'AMPLIFICATION'),
+    ('UNIQUENESS', 'AMPLIFICATION'),
+    ('GRATIFICATION', 'POWER'),
+    ('DISTINCTION', 'POWER'),
+    ('AMPLIFICATION', 'POWER')]
+
+MDF_RENAMER = {
+    '@input.Affinity': 'EMOTIONAL', 
+    '@input.MeetNeeds': 'RATIONAL', 
+    '@input.Dynamic': 'LEADERSHIP', 
+    '@input.Unique': 'UNIQUENESS',
+    'Meaningful': 'GRATIFICATION', 
+    'Different': 'DISTINCTION', 
+    'Salient': 'AMPLIFICATION',
+    'Power': 'POWER', 
+    'Premium v2': 'PREMIUM'}
+
+SHEET_IMAGE = 'image_sets'
+SHEET_DATA = 'data'
+SHEET_MODEL = 'model_spec'
+
+##############################################################
+##############################################################
+
 
 class ExtOrderedDict(OrderedDict):
     def top(self):
@@ -92,56 +135,19 @@ def CheckColumnsPresent(data:pd.DataFrame, cols: list) -> bool:
 
 
 class ExploratoryAnalysis: 
-    factor_columns = ['EMOTIONAL', 'RATIONAL', 'LEADERSHIP', 'UNIQUENESS']
-    mdf_columns = ['GRATIFICATION', 'DISTINCTION', 'AMPLIFICATION']
-    power_premium_columns = ['POWER', 'PREMIUM']
-
-    mdf_graph = [
-        ('EMOTIONAL', 'GRATIFICATION'),
-        ('RATIONAL', 'GRATIFICATION'),
-        ('LEADERSHIP', 'GRATIFICATION'),
-        ('UNIQUENESS', 'GRATIFICATION'),
-        ('EMOTIONAL', 'DISTINCTION'),
-        ('RATIONAL', 'DISTINCTION'),
-        ('LEADERSHIP', 'DISTINCTION'),
-        ('UNIQUENESS', 'DISTINCTION'),
-        ('EMOTIONAL', 'AMPLIFICATION'),
-        ('RATIONAL', 'AMPLIFICATION'),
-        ('LEADERSHIP', 'AMPLIFICATION'),
-        ('UNIQUENESS', 'AMPLIFICATION'),
-        ('GRATIFICATION', 'POWER'),
-        ('DISTINCTION', 'POWER'),
-        ('AMPLIFICATION', 'POWER')]
 
     image_sets = ExtOrderedDict()
     graphs_for_sets: dict[str: GraphManipulations] = {}
 
-    worksheet_image = 'image_sets'
-    worksheet_data = 'data'
-    worksheet_model = 'model_spec'
-
-    
-
     def __init__(self):
         self.image_sets.clear()
         self.graphs_for_sets.clear()
-
-    def __EquityColumns(self):
-        return self.factor_columns + self.mdf_columns + self.power_premium_columns
     
-    def __ReadModelSpec(self): 
-        self.image_sets.clear()
-        self.graphs_for_sets.clear()
-        data = pd.read_excel(self.data_file_name, sheet_name=self.worksheet_image, index_col=0)
-        for set_ in data.columns: 
-            if data[set_].notna().any(): 
-                self.image_sets[set_] = data[set_].dropna().to_dict()
-                self.graphs_for_sets[set_] = None # will GraphManipulation object
 
     def __ReadImageSets(self): 
         self.image_sets.clear()
         self.graphs_for_sets.clear()
-        data = pd.read_excel(self.data_file_name, sheet_name=self.worksheet_image, index_col=0)
+        data = pd.read_excel(self.data_file_name, sheet_name=SHEET_IMAGE, index_col=0)
         for set_ in data.columns: 
             if data[set_].notna().any(): 
                 self.image_sets[set_] = data[set_].dropna().to_dict()
@@ -150,21 +156,9 @@ class ExploratoryAnalysis:
 
     def FullImageList(self):
         return self.image_sets.top()[1]
-
-    """def __ImageColumnsRenamer(self, image_set: dict) -> dict:
-        return {'IMG{:02d}_'.format(k): v for k, v in image_set.items()}
-    
-    def __SOEColumnsRenamer(self, image_set: dict) -> dict:
-        return {'soe.IMG{:02d}_'.format(k): v for k, v in image_set.items()}"""
-    
-    """def GetCleanSOEDataForSet(self, image_set: dict) -> pd.DataFrame:
-        return self.clean_data.rename(columns=self.__SOEColumnsRenamer(image_set))[image_set.values()]
-    
-    def GetCleanSOEDataForList(self, image_list: list) -> pd.DataFrame:
-        return self.clean_data.rename(columns=self.__SOEColumnsRenamer(self.FullImageList()))[image_list]"""
     
     def __ReadData(self): 
-        data = pd.read_excel(self.data_file_name, sheet_name=self.worksheet_data)
+        data = pd.read_excel(self.data_file_name, sheet_name=SHEET_DATA)
 
         # dropna
         img_cols = ['IMG{:02d}_'.format(k) for k in self.FullImageList().keys()]
@@ -179,19 +173,9 @@ class ExploratoryAnalysis:
         #img_renamer = {'IMG{:02d}_'.format(k): v for k, v in self.FullImageList().items()}
         #self.clean_img_data = data.rename(soe_renamer)
 
-        mdf_renamer = {
-            '@input.Affinity': 'EMOTIONAL', 
-            '@input.MeetNeeds': 'RATIONAL', 
-            '@input.Dynamic': 'LEADERSHIP', 
-            '@input.Unique': 'UNIQUENESS',
-            'Meaningful': 'GRATIFICATION', 
-            'Different': 'DISTINCTION', 
-            'Salient': 'AMPLIFICATION',
-            'Power': 'POWER', 
-            'Premium v2': 'PREMIUM'}
-        if not CheckColumnsPresent(data, mdf_renamer.keys()):
-            raise ValueError("Not all MDF variables are present in the data. Expected: " + str(mdf_renamer.keys()))
-        self.clean_mdf_data = data[mdf_renamer.keys()].rename(columns=mdf_renamer)
+        if not CheckColumnsPresent(data, MDF_RENAMER.keys()):
+            raise ValueError("Not all MDF variables are present in the data. Expected: " + str(MDF_RENAMER.keys()))
+        self.clean_mdf_data = data[MDF_RENAMER.keys()].rename(columns=MDF_RENAMER)
 
     def CleanSOEandMDFData(self): 
         return pd.concat([self.clean_mdf_data, self.clean_soe_data], axis=1)
@@ -247,7 +231,7 @@ class ExploratoryAnalysis:
             for target_name, y in Y.items():
                 fod = CalcLinRegWithVarSelect(X, y)
                 self.reporter.AddTable(fod, 'FOD {}'.format(set_name))
-                if target_name in self.factor_columns:
+                if target_name in FACTORS:
                     self.graphs_for_sets[set_name].AddEdges([(ix, target_name) for ix, val in fod['Final Selection'].items() if val])
         print("First Order Drivers - Ok")
 
@@ -256,7 +240,7 @@ class ExploratoryAnalysis:
         self.ReportFirstOrderDrivers() 
         data = self.CleanSOEandMDFData()
         for set_name, set_ in self.image_sets.items():
-            self.graphs_for_sets[set_name].AddEdges(self.mdf_graph)
+            self.graphs_for_sets[set_name].AddEdges(MDF_GRAPH)
             self.graphs_for_sets[set_name].AppendPLSWeights(data) 
             self.reporter.AddImage(self.graphs_for_sets[set_name].Plot(), 'BSA_{}'.format(set_name))
 
