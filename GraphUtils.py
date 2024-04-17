@@ -13,13 +13,14 @@ from plspm.scheme import Scheme
 from plspm.mode import Mode
 
 
-
+import utils
 
 
 class ModelSpec:
-    allowed_types = ['formative', 'reflective']
+    PATH_EDGE_TYPE = 'path'
 
-    class LV: 
+    class Construct:
+        TYPES = ['formative', 'reflective']
         def __init__(self, name: str, type: str, indicators: list | str):
             self.type = type
             self.name = name
@@ -39,21 +40,23 @@ class ModelSpec:
 
 
     edges: list[tuple[str, str]]
-    constructs: dict[str, LV]
+    constructs: dict[str, Construct]
 
     def __init__(self, spec: list[dict]) -> None:
+        # accepts list of model edges
+        # dict format: {'from': str, 'to': str, 'type': str}
         self.edges = list()
         self.constructs = dict()
         self.__AppendFromList(spec)
 
     def __AppendFromList(self, spec: list[dict]):
         for item in spec: 
-            if item['type'] in  self.allowed_types: 
+            if item['type'] in  self.Construct.TYPES:
                 if item['from'] in self.constructs.keys():
                     self.constructs[item['from']].AppendIndicator(item['from'], item['type'], item['to'])
                 else:
-                    self.constructs[item['from']] = self.LV(item['from'], item['type'], item['to'])
-            elif item['type'] == 'path':
+                    self.constructs[item['from']] = self.Construct(item['from'], item['type'], item['to'])
+            elif item['type'] == self.PATH_EDGE_TYPE:
                 self.edges.append((item['from'], item['to']))
             else:
                 raise ValueError("Wrong LV definition: {}".format(item))
@@ -157,6 +160,37 @@ class GraphManipulations:
     def __FromEdges(self, edges: list):
         self.graph = pgv.AGraph(directed=True)
         self.graph.add_edges_from(edges)
+
+
+    @classmethod
+    def FromSpec(self, spec: pd.DataFrame):
+        FROM, TO, TYPE  = 'from', 'to', 'type'
+        REFL, FORM, PATH = 'reflective', 'formative', 'path'
+
+        assert utils.CheckColumnsPresent(spec, [FROM, TO, TYPE])
+        
+        constructs = dict()
+        
+        graph = pgv.AGraph(directed=True)
+
+        for _, edge in spec.iterrows(): 
+            if edge[TYPE] == PATH:
+                graph.add_edge(edge[FROM], edge[TO])
+            elif edge[TYPE] in [REFL, FORM]:
+                if edge[FROM] in constructs.keys(): 
+                    assert constructs[edge[FROM]]['type'] == edge[TYPE], "Inconsistent LV definition {}".format(edge[FROM])
+                    constructs[edge[FROM]]['mvs'].append(edge[TO])
+                else: 
+                    constructs[edge[FROM]] = {'type': edge[TYPE], 'mvs': [edge[TO]]}
+
+        for c_name, c_def in constructs.items():
+            #graph.add_nodes_from(c_def['mvs'])
+            sg = graph.add_subgraph(name=c_name, label=c_def[TYPE], bgcolor='red')
+            sg.add_nodes_from(c_def['mvs'])
+        
+        return graph
+
+
     
     def __init__(self, graph): 
         if isinstance(graph, pgv.AGraph): 
@@ -168,6 +202,8 @@ class GraphManipulations:
             self.__FromEdges(graph.edges)
         else: 
             self.graph = graph.to_graphviz()
+
+
 
 
     def ResetModels(self):

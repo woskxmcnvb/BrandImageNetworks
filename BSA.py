@@ -18,6 +18,8 @@ from sklearn.feature_selection import SequentialFeatureSelector
 from sklearn.feature_selection import RFECV
 from sklearn.linear_model import LinearRegression
 
+import utils
+
 ##############################################################
 ###################### NAMESPACE #############################
 ##############################################################
@@ -129,8 +131,8 @@ def SelectFirstOrderDrivers(X: pd.DataFrame, y: pd.DataFrame, beta_tolerance=0.0
 ##################################################
 
 
-def CheckColumnsPresent(data:pd.DataFrame, cols: list) -> bool:
-    return all([col in data.columns for col in cols])
+"""def CheckColumnsPresent(data:pd.DataFrame, cols: list) -> bool:
+    return all([col in data.columns for col in cols])"""
 
 
 
@@ -165,7 +167,7 @@ class ExploratoryAnalysis:
         data = data[data[img_cols].notna().all(axis=1)]
         
         soe_renamer = {'soe.IMG{:02d}_'.format(k): v for k, v in self.FullImageList().items()}
-        if not CheckColumnsPresent(data, soe_renamer.keys()):
+        if not utils.CheckColumnsPresent(data, soe_renamer.keys()):
             raise ValueError("Not all SOE Images listed in first set are present in the data")
         self.clean_soe_data = data[soe_renamer.keys()].rename(columns=soe_renamer)
 
@@ -173,7 +175,7 @@ class ExploratoryAnalysis:
         #img_renamer = {'IMG{:02d}_'.format(k): v for k, v in self.FullImageList().items()}
         #self.clean_img_data = data.rename(soe_renamer)
 
-        if not CheckColumnsPresent(data, MDF_RENAMER.keys()):
+        if not utils.CheckColumnsPresent(data, MDF_RENAMER.keys()):
             raise ValueError("Not all MDF variables are present in the data. Expected: " + str(MDF_RENAMER.keys()))
         self.clean_mdf_data = data[MDF_RENAMER.keys()].rename(columns=MDF_RENAMER)
 
