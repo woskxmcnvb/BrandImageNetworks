@@ -1,8 +1,6 @@
 import io
 from PIL import Image
 
-#from collections import defaultdict
-
 import pandas as pd
 
 import pygraphviz as pgv
@@ -12,11 +10,21 @@ from plspm.plspm import Plspm
 from plspm.scheme import Scheme
 from plspm.mode import Mode
 
-
 import utils
+
+from definitions import *
+
+
+def TupleToEdgeDict(edge: tuple) -> dict:
+    # (from, to, type)
+    from_, to_, type_ = edge
+    return {FROM_KEY: from_, TO_KEY: to_, TYPE_KEY: type_}
+
 
 def PlotGraph(graph: pgv.AGraph):
     stream = io.BytesIO()
+    if not isinstance(graph, pgv.AGraph):
+        graph = graph.to_graphviz()
     graph.draw(stream, format='png', prog='dot')
     return Image.open(stream)
 
@@ -24,9 +32,8 @@ def PlotGraph(graph: pgv.AGraph):
 class ModelSpec:
 
     class Edge:
-        TYPES = ['path', 'correlation']
         def __init__(self, from_: str, to_: str, type: str):
-            assert type in self.TYPES, "Wrong path type definition: {} to {}".format(from_, to_)
+            assert type in EDGE_TYPES, "Wrong path type definition: {} to {}".format(from_, to_)
             self.from_ = from_
             self.to_ = to_
             self.type_ = type
@@ -36,6 +43,9 @@ class ModelSpec:
                 return (self.from_, self.to_, self.type_)
             else:
                 return (self.from_, self.to_)
+            
+        def Type(self):
+            return self.type_
 
     class Construct:
         TYPE_FORMATIVE = 'formative'
@@ -88,20 +98,58 @@ class ModelSpec:
     constructs: dict[str, Construct]
     nodes: dict[str, Node]
 
-    def __init__(self, spec: list[dict]) -> None:
-        # accepts list of model edges
-        # dict format: {'from': str, 'to': str, 'type': str}
+    def __init__(self, spec: list | pd.DataFrame | pgv.AGraph = None) -> None:
         self.edges = list()
         self.constructs = dict()
         self.nodes = dict()
+        if spec is not None:
+            self.AppendEdges(spec)
+
+    def __FromList(self, spec: list[dict]):
+        # private потому что нет consistency check
+        for item in spec: 
+            from_, to_, type_ = item[FROM_KEY], item[TO_KEY], item[TYPE_KEY]
+            if type_ in self.Construct.TYPES:
+                if self.HasConstruct(from_):
+                    self.constructs[from_].AppendIndicator(from_, type_, to_)
+                else:
+                    self.constructs[from_] = self.Construct(from_, type_, to_)
+            elif type_ in EDGE_TYPES:
+                self.edges.append(self.Edge(from_, to_, type_))
+                self.__AddNode(from_)
+                self.__AddNode(to_)
+                self.nodes[to_].AddInEdge(from_)
+                self.nodes[from_].AddOutEdge(to_)
+            else:
+                raise ValueError("Wrong LV definition: {}".format(item))
+    
+    def __FromDF(self, spec: pd.DataFrame):
+        # private потому что нет consistency check
+        self.__FromList(spec.to_dict('records'))
+
+    def __FromAGraph(self, graph: pgv.AGraph):
+        # private потому что нет consistency check
+        self.__FromList(
+            [{FROM_KEY: from_, TO_KEY: to_, TYPE_KEY: 'path'} for from_, to_ in graph.edges()]
+        )
+    
+    def AppendEdges(self, spec: list | pd.DataFrame | pgv.AGraph) -> None:
+        # dict format: {'from': str, 'to': str, 'type': str}
         if isinstance(spec, pd.DataFrame):
-            self.AppendFromDF(spec)
+            self.__FromDF(spec)
         elif isinstance(spec, list):
-            self.AppendFromList(spec)
+            self.__FromList(spec)
+        elif isinstance(spec, pgv.AGraph):
+            self.__FromAGraph(spec)
+        else: 
+            raise ValueError("GraphicModel: unknown input to ctor")
         self.ConsistencyCheck()
 
     def Edges(self, include_type=False) -> list[tuple]:
-        return [e.AsTouple() for e in self.edges]
+        return [e.AsTouple(include_type=include_type) for e in self.edges]
+    
+    def ToDF(self):
+        return pd.DataFrame(self.Edges(include_type=True), columns=[FROM_KEY, TO_KEY, TYPE_KEY])
     
     def Nodes(self) -> list[str]:
         return list(self.nodes.keys()) 
@@ -114,34 +162,11 @@ class ModelSpec:
     
     def OutEdges(self, node) -> set[str]:
         return self.nodes[node].OutEdges()
-    
-    def AppendFromDF(self, spec: pd.DataFrame): 
-        self.AppendFromList(spec.to_dict('records'))
 
     def __AddNode(self, name: str):
         if not name in self.nodes.keys():
             self.nodes[name] = self.Node(name)
 
-    def AppendFromList(self, spec: list[dict]):
-        FROM, TO, TYPE  = 'from', 'to', 'type'
-        REQUIRED_KEYS = [FROM, TO, TYPE]
-
-        for item in spec: 
-            from_, to_, type_ = item[FROM], item[TO], item[TYPE]
-            if type_ in self.Construct.TYPES:
-                if self.HasConstruct(from_):
-                    self.constructs[from_].AppendIndicator(from_, type_, to_)
-                else:
-                    self.constructs[from_] = self.Construct(from_, type_, to_)
-            elif type_ in self.Edge.TYPES:
-                self.edges.append(self.Edge(from_, to_, type_))
-                self.__AddNode(from_)
-                self.__AddNode(to_)
-                self.nodes[to_].AddInEdge(from_)
-                self.nodes[from_].AddOutEdge(to_)
-            else:
-                raise ValueError("Wrong LV definition: {}".format(item))
-            
     def ConsistencyCheck(self):
         all_mvs_for_constructs = set()
         for c in self.constructs.values():
@@ -203,42 +228,58 @@ class PLSPMModel:
         return self.model.path_coefficients()
     
     def GetPathCoef(self, edge: tuple):
+        edge = edge[:2]
         assert self.model, "Run .Fit first"
         from_, to_ = ['lv_{}'.format(node) for node in edge]
         return self.GetPathCoefs().loc[to_, from_]
 
 
 class GraphicModel:
-    graph: pgv.AGraph | None = None
+    # интерфейс для работы с графическими моделями
+    # (1) хранит спецификацию модели в классе ModelSpec
+    #     инициализируется спецификацией модели в различных форматах 
+    # (2) запускает и хранит обсчет модели PLS
+    #     SEM пока не реализован 
+    # (3) строит графы в различных разрезах в формате pgv.AGraph
+
     plspm: PLSPMModel | None = None
     model_spec: ModelSpec | None = None
 
-    def __init__(self, spec): 
+    def __init__(self, spec=None): 
         self.model_spec = ModelSpec(spec)
 
     def ResetModels(self):
         self.plspm = None
+
+    def AppendMDFGraph(self):
+        self.AppendEdges(MDF_GRAPH)
+
+    def AppendEdges(self, spec):
+        self.ResetModels()
+        self.model_spec.AppendEdges(spec)
   
     def FitPLSPM(self, data: pd.DataFrame): 
         self.plspm = PLSPMModel().ConfigFromModel(self.model_spec).Fit(data)
         return self
 
-    def Graph(self, add_pls_weights=True):
+    def Graph(self, add_pls_weights=True, exclude_mdf=True):
         if add_pls_weights and (self.plspm is None):
             print("Warning! PLS is not fit, building without PLS weights")
+            add_pls_weights = False
         
         graph = pgv.AGraph(directed=True)
-        if add_pls_weights: 
-            for edge in self.model_spec.Edges(include_type=False):
+        for edge in self.model_spec.Edges(include_type=True):
+            if exclude_mdf and edge[2] == EDGE_TYPE_MDF:
+                continue
+            if add_pls_weights: 
                 wt = self.plspm.GetPathCoef(edge)
-                graph.add_edge(*edge, label='{:.2f}'.format(wt), penwidth=wt * 10)
-        else:
-            for edge in self.model_spec.Edges(include_type=False):
-                graph.add_edge(*edge)
+                graph.add_edge(*edge[:2], label='{:.2f}'.format(wt), penwidth=wt * 10)
+            else:
+                graph.add_edge(*edge[:2])
         
         return graph
     
-    def SubgraphFromNodes(self, node: str | list[str]): 
+    def SubgraphFromNodes(self, node: str | list[str], add_pls_weights=True, exclude_mdf=True): 
         
         def _walk_down(from_: str, func):
             for to_ in self.model_spec.OutEdges(from_):
@@ -251,7 +292,9 @@ class GraphicModel:
                 _walk_up(from_, func)
 
         def _add_edge(edge: tuple[str], graph: pgv.AGraph):
-            if self.plspm:
+            if exclude_mdf and ((edge[0] in MDFS_POWER_PREMIUM) or (edge[1] in MDFS_POWER_PREMIUM)):
+                return
+            if add_pls_weights and self.plspm:
                 wt = self.plspm.GetPathCoef(edge)
                 graph.add_edge(*edge, label='{:.2f}'.format(wt), penwidth=wt * 10)
             else:

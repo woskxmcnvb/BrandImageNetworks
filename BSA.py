@@ -5,8 +5,11 @@ import pandas as pd
 import numpy as np
 from itertools import product
 
+from openpyxl import load_workbook
+
+
 from ExcelReportBuilder import ExcelReportBuilder
-from GraphUtils import GraphManipulations
+from GraphicModel import GraphicModel, PlotGraph, TupleToEdgeDict
 
 from factor_analyzer import FactorAnalyzer
 
@@ -20,30 +23,8 @@ from sklearn.linear_model import LinearRegression
 
 import utils
 
-##############################################################
-###################### NAMESPACE #############################
-##############################################################
+from definitions import *
 
-FACTORS = ['EMOTIONAL', 'RATIONAL', 'LEADERSHIP', 'UNIQUENESS']
-MDFS = ['GRATIFICATION', 'DISTINCTION', 'AMPLIFICATION']
-POWER_PREMIUM = ['POWER', 'PREMIUM']
-
-MDF_GRAPH = [
-    ('EMOTIONAL', 'GRATIFICATION'),
-    ('RATIONAL', 'GRATIFICATION'),
-    ('LEADERSHIP', 'GRATIFICATION'),
-    ('UNIQUENESS', 'GRATIFICATION'),
-    ('EMOTIONAL', 'DISTINCTION'),
-    ('RATIONAL', 'DISTINCTION'),
-    ('LEADERSHIP', 'DISTINCTION'),
-    ('UNIQUENESS', 'DISTINCTION'),
-    ('EMOTIONAL', 'AMPLIFICATION'),
-    ('RATIONAL', 'AMPLIFICATION'),
-    ('LEADERSHIP', 'AMPLIFICATION'),
-    ('UNIQUENESS', 'AMPLIFICATION'),
-    ('GRATIFICATION', 'POWER'),
-    ('DISTINCTION', 'POWER'),
-    ('AMPLIFICATION', 'POWER')]
 
 MDF_RENAMER = {
     '@input.Affinity': 'EMOTIONAL', 
@@ -59,9 +40,6 @@ MDF_RENAMER = {
 SHEET_IMAGE = 'image_sets'
 SHEET_DATA = 'data'
 SHEET_MODEL = 'model_spec'
-
-##############################################################
-##############################################################
 
 
 class ExtOrderedDict(OrderedDict):
@@ -84,7 +62,6 @@ def CalcFA(df: pd.DataFrame, n_factors) -> pd.DataFrame:
 def CalcBayesNetworkGraph(df: pd.DataFrame) -> io.BytesIO:
     hc = HillClimbSearch(df)
     model = hc.estimate(scoring_method=BicScore(df))
-    #print(model.edges()) 
     stream = io.BytesIO()
     model.to_graphviz().draw(stream, format='png', prog='dot')
     return stream
@@ -138,22 +115,37 @@ def SelectFirstOrderDrivers(X: pd.DataFrame, y: pd.DataFrame, beta_tolerance=0.0
 
 class ExploratoryAnalysis: 
 
-    image_sets = ExtOrderedDict()
-    graphs_for_sets: dict[str: GraphManipulations] = {}
+    image_sets: ExtOrderedDict
+    expl_graph_model_sets: dict[str: GraphicModel]
+    bsa_models: dict[str: GraphicModel]
 
     def __init__(self):
-        self.image_sets.clear()
-        self.graphs_for_sets.clear()
+        self.bn_ready = False 
+        self.fod_ready = False
+        self.image_sets = ExtOrderedDict()
+        self.expl_graph_model_sets = dict()
     
 
     def __ReadImageSets(self): 
-        self.image_sets.clear()
-        self.graphs_for_sets.clear()
         data = pd.read_excel(self.data_file_name, sheet_name=SHEET_IMAGE, index_col=0)
         for set_ in data.columns: 
             if data[set_].notna().any(): 
                 self.image_sets[set_] = data[set_].dropna().to_dict()
-                self.graphs_for_sets[set_] = None # will GraphManipulation object
+                self.expl_graph_model_sets[set_] = GraphicModel()
+
+    def __ReadModelSpec(self):
+        model_sheets = [sh for sh in load_workbook(self.data_file_name).sheetnames if sh.startswith(SHEET_MODEL)]
+        self.bsa_models = dict()
+        for sheet in model_sheets:
+            name = sheet.split(SHEET_MODEL)[1]
+            if name == '':
+                name = str(len(self.bsa_models))
+            spec = pd.read_excel(self.data_file_name, sheet_name=SHEET_MODEL)
+            assert utils.AllElementsAreThere(EDGE_KEYS, spec.columns),\
+                "Wrong model spec columns. There are: {}. Expected: {}".format(spec.columns, EDGE_KEYS)
+            spec = spec[spec.notna().all(axis=1)]
+            self.bsa_models[name] = GraphicModel(spec)
+        print("Read model spec - Ok")
 
 
     def FullImageList(self):
@@ -188,7 +180,6 @@ class ExploratoryAnalysis:
         self.__ReadData()
         print("Read File - Ok")
 
-
     def ReportImageCrossCorrelations(self):
         corr_table = self.clean_soe_data.corr()
         # clean diagonal
@@ -197,7 +188,6 @@ class ExploratoryAnalysis:
                 corr_table.iloc[r, c] = np.nan
         self.reporter.AddTable(corr_table, 'SOE cross-correlations', conditional_formatting=True)
         print("SOE cross-correlations - Ok")
-
 
     def ReportFAs(self): 
         for i in range(3, len(self.FullImageList()) + 1):
@@ -217,11 +207,15 @@ class ExploratoryAnalysis:
 
     def ReportBayesNetworkGraphs(self): 
         for set_name, set_ in self.image_sets.items():
-            G1 = GraphManipulations(CalcBayesNetwork(self.clean_soe_data[set_.values()]))
-            self.reporter.AddImage(G1.Plot(), 'Graphs_{}'.format(set_name))
-            
-            self.graphs_for_sets[set_name] = GraphManipulations(CalcBayesNetwork(self.clean_soe_data[set_.values()].mul(10).round()))
-            self.reporter.AddImage(self.graphs_for_sets[set_name].Plot(), 'Graphs_{}'.format(set_name), "AA1")
+            self.reporter.AddImage(
+                PlotGraph(CalcBayesNetwork(self.clean_soe_data[set_.values()]).to_graphviz()), 
+                'Graphs_{}'.format(set_name)
+            )
+            # этот граф сохраняем для дальнейшего использования
+            g = CalcBayesNetwork(self.clean_soe_data[set_.values()].mul(10).round()).to_graphviz()
+            self.expl_graph_model_sets[set_name].AppendEdges(g)
+            self.reporter.AddImage(PlotGraph(g), 'Graphs_{}'.format(set_name), "AA1")
+        self.bn_ready = True
         print("Bayes nets graphs - Ok")
     
 
@@ -232,38 +226,103 @@ class ExploratoryAnalysis:
             X = XX[set_.values()]
             for target_name, y in Y.items():
                 fod = CalcLinRegWithVarSelect(X, y)
+                # !!!!!!!!!!!!!!!!! ЗАГОЛОВОК
                 self.reporter.AddTable(fod, 'FOD {}'.format(set_name))
                 if target_name in FACTORS:
-                    self.graphs_for_sets[set_name].AddEdges([(ix, target_name) for ix, val in fod['Final Selection'].items() if val])
+                    self.expl_graph_model_sets[set_name].AppendEdges(
+                        [TupleToEdgeDict((ix, target_name, EDGE_TYPE_PATH)) for ix, val in fod['Final Selection'].items() if val]
+                    )
+        self.fod_ready = True
         print("First Order Drivers - Ok")
 
-    def ReportGraphs(self):
-        self.ReportBayesNetworkGraphs()
-        self.ReportFirstOrderDrivers() 
-        data = self.CleanSOEandMDFData()
+    def ReportBSAGraphs(self):
+        if not self.bn_ready:
+            self.ReportBayesNetworkGraphs()
+        if not self.fod_ready:
+            self.ReportFirstOrderDrivers() 
+
         for set_name, set_ in self.image_sets.items():
-            self.graphs_for_sets[set_name].AddEdges(MDF_GRAPH)
-            self.graphs_for_sets[set_name].AppendPLSWeights(data) 
-            self.reporter.AddImage(self.graphs_for_sets[set_name].Plot(), 'BSA_{}'.format(set_name))
+            self.expl_graph_model_sets[set_name].AppendMDFGraph()
+            self.expl_graph_model_sets[set_name].FitPLSPM(self.CleanSOEandMDFData()) 
+            page_name = 'BSA_{}'.format(set_name)
+            self.reporter.AddImage(
+                PlotGraph(self.expl_graph_model_sets[set_name].Graph(add_pls_weights=False, exclude_mdf=True)), 
+                page_name, "B1"
+            )
+            self.reporter.AddImage(
+                PlotGraph(self.expl_graph_model_sets[set_name].Graph(add_pls_weights=True, exclude_mdf=False)), 
+                page_name, "AA1"
+            )
+            self.reporter.AddTable(
+                self.expl_graph_model_sets[set_name].model_spec.ToDF(),
+                page_name, drop_index=True
+            )
 
     def ReportTreeGraphs(self):
         for col in self.clean_soe_data: 
             self.reporter.AddImage(
-                GraphManipulations(CalcTree(self.clean_soe_data, col)).Plot(), 
+                PlotGraph(CalcTree(self.clean_soe_data, col).to_graphviz()), 
                 'TREE {}'.format(col)
-                )
+            )
     
-    def ExploratoryReport(self, data_file_name):
-        self.reporter = ExcelReportBuilder(data_file_name.split('.')[0] + '_report.xlsx')
+    def ExploratoryReport(self, data_file_name, 
+                          correlations=True,
+                          factor_solutions=False,
+                          BSA_graphs=True, 
+                          tree_graphs=False):
+        self.reporter = ExcelReportBuilder(data_file_name.split('.')[0] + '_exploratory_report.xlsx')
         self.ReadDataFile(data_file_name)
         
-        self.ReportImageCrossCorrelations()
-        self.ReportFAs()
-        self.ReportSOEToEquityCorrelations()
-        
-        self.ReportGraphs()
-        self.ReportTreeGraphs()
+        if correlations:
+            self.ReportImageCrossCorrelations()
+            self.ReportSOEToEquityCorrelations()
+        if factor_solutions:
+            self.ReportFAs()
+        if BSA_graphs:
+            self.ReportBSAGraphs()
+        if tree_graphs:
+            self.ReportTreeGraphs()
 
         self.reporter.SaveToFile()
+
+    
+    def BSAReports(self, data_file_name):
+        self.ReadDataFile(data_file_name)
+        self.__ReadModelSpec()
+
+        for model in self.bsa_models.keys():
+            self.__OneBSAReport(model)
+
+    def __OneBSAReport(self, spec_name):
+        reporter = ExcelReportBuilder("{}_bsa_report_{}.xlsx ".format(self.data_file_name.split('.')[0], spec_name))
+        self.bsa_models[spec_name].AppendMDFGraph()
+        self.bsa_models[spec_name].FitPLSPM(self.CleanSOEandMDFData())
+
+        targets = POWER_PREMIUM + MDFS + FACTORS
+        reporter.AddTable(
+            pd.concat(
+                [self.bsa_models[spec_name].PathLenFromAllNodes(t) for t in targets], 
+                axis=1
+            ).set_axis(targets, axis='columns'), 
+            "importance"
+        )
+
+        reporter.AddImage(
+            PlotGraph(self.bsa_models[spec_name].Graph(add_pls_weights=False, exclude_mdf=True)), 
+            'TOTAL_GRAPHS'
+        )
+        reporter.AddImage(
+            PlotGraph(self.bsa_models[spec_name].Graph(add_pls_weights=True, exclude_mdf=False)), 
+            'TOTAL_GRAPHS',
+            "AA1"
+        )
         
-        
+        for node in self.bsa_models[spec_name].model_spec.Nodes():
+            if (node in MDFS) or (node in POWER_PREMIUM):
+                continue
+            reporter.AddImage(
+                PlotGraph(self.bsa_models[spec_name].SubgraphFromNodes(node)), 
+                "GR_FROM_{}".format(node)
+        )
+
+        reporter.SaveToFile()
