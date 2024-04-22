@@ -10,6 +10,8 @@ from plspm.plspm import Plspm
 from plspm.scheme import Scheme
 from plspm.mode import Mode
 
+import semopy
+
 import utils
 
 from definitions import *
@@ -151,6 +153,36 @@ class ModelSpec:
     def ToDF(self):
         return pd.DataFrame(self.Edges(include_type=True), columns=[FROM_KEY, TO_KEY, TYPE_KEY])
     
+    def ToSEMOPYDesc(self): 
+        desc = "# measurement model \n"
+        for _, c in self.constructs.items():
+            plus_sign = ""
+            c_desc = c.name_.replace(' ', '_') + " =~ "
+            for i in c.indicators_:
+                c_desc += (plus_sign + i.replace(' ', '_'))
+                plus_sign = " + "
+            c_desc += "\n"
+            desc += c_desc
+
+        desc += "\n# regressions\n"
+        for _, n in self.nodes.items():
+            if len(n.InEdges()) == 0:
+                continue
+            n_desc = n.name.replace(' ', '_') + " ~ " 
+            plus_sign = ""
+            for in_edge in n.InEdges():
+                n_desc += (plus_sign + in_edge.replace(' ', '_'))
+                plus_sign = " + "
+            n_desc += "\n"
+            desc += n_desc
+
+        desc += "\n# residual correlations\n"
+        for e in self.edges:
+            if e.type_ == EDGE_TYPE_CORR:
+                desc += "{} ~~ {}".format(e.from_.replace(' ', '_'), e.to_.replace(' ', '_'))
+
+        return desc
+
     def Nodes(self) -> list[str]:
         return list(self.nodes.keys()) 
     
@@ -183,6 +215,18 @@ class ModelSpec:
             raise ValueError("Inconsistent model spec: The same indicators in single and constructs {}".format(doubles))
 
 
+class SemopyModel:
+    desc: str | None
+    model: semopy.Model
+
+    def __init__(self, desc: str):
+        self.desc = desc
+        self.model = semopy.Model(self.desc)
+
+    def Fit(self, data: pd.DataFrame):
+        data = data.rename(columns=lambda x: x.replace(' ', '_'))
+        return self.model.fit(data)
+        
 
 class PLSPMModel:
     model: Plspm | None = None
@@ -261,6 +305,11 @@ class GraphicModel:
     def FitPLSPM(self, data: pd.DataFrame): 
         self.plspm = PLSPMModel().ConfigFromModel(self.model_spec).Fit(data)
         return self
+    
+    def FitSEM(self, data: pd.DataFrame):
+        self.sem = SemopyModel(self.model_spec.ToSEMOPYDesc())
+        print(self.sem.Fit(data))
+        #return self
 
     def Graph(self, add_pls_weights=True, exclude_mdf=True):
         if add_pls_weights and (self.plspm is None):
@@ -324,7 +373,7 @@ class GraphicModel:
         if isinstance(end_nodes, str): 
             end_nodes = [end_nodes]
         elif not isinstance(end_nodes, list):
-            raise ValueError(".RouteLen: Wrong to_ definition")
+            raise ValueError(".PathLen: Wrong to_ definition")
         
         total_route_len = 0
         
@@ -344,7 +393,7 @@ class GraphicModel:
         if isinstance(end_nodes, str): 
             end_nodes = [end_nodes]
         elif not isinstance(end_nodes, list):
-            raise ValueError(".RouteLen: Wrong to_ definition")
+            raise ValueError(".PathLenFromAllNodes: Wrong to_ definition")
         
         assert utils.AllElementsAreThere(end_nodes, self.model_spec.Nodes()), "Not all nodes are present in the model"
         
@@ -352,5 +401,8 @@ class GraphicModel:
         for node in self.model_spec.Nodes():
             result[node] = self.PathLen(node, end_nodes)
         return pd.Series(result).sort_values(ascending=False)
+    
+
+
 
     

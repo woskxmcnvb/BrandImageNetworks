@@ -326,3 +326,7 @@ class ExploratoryAnalysis:
         )
 
         reporter.SaveToFile()
+
+    def DEBUG(self, data_file_name):
+        self.ReadDataFile(data_file_name)
+        self.__ReadModelSpec()
