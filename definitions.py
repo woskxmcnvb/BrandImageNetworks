@@ -2,11 +2,24 @@
 ###################### NAMESPACE #############################
 ##############################################################
 
+MDF_RENAMER = {
+    '@input.Affinity': 'EMOTIONAL', 
+    '@input.MeetNeeds': 'RATIONAL', 
+    '@input.Dynamic': 'LEADERSHIP', 
+    '@input.Unique': 'UNIQUENESS',
+    'Meaningful': 'GRATIFICATION', 
+    'Different': 'DISTINCTION', 
+    'Salient': 'AMPLIFICATION',
+    'Power': 'POWER', 
+    'Premium v2': 'PREMIUM'}
+
+
 FACTORS = ['EMOTIONAL', 'RATIONAL', 'LEADERSHIP', 'UNIQUENESS']
 MDFS = ['GRATIFICATION', 'DISTINCTION', 'AMPLIFICATION']
 POWER_PREMIUM = ['POWER', 'PREMIUM']
 
 MDFS_POWER_PREMIUM = ['GRATIFICATION', 'DISTINCTION', 'AMPLIFICATION', 'POWER', 'PREMIUM']
+
 
 # edge keys
 FROM_KEY, TO_KEY, TYPE_KEY  = 'from', 'to', 'type'
@@ -38,3 +51,6 @@ EDGE_TYPE_MDF = 'mdf'
 EDGE_TYPE_PATH = 'path'
 EDGE_TYPE_CORR = 'correlation'
 EDGE_TYPES = ['path', 'correlation', 'mdf']
+
+
+SOE_COL_TEMPLATE = 'soe.IMG{:02d}_'

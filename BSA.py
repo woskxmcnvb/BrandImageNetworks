@@ -25,18 +25,6 @@ import utils
 
 from definitions import *
 
-
-MDF_RENAMER = {
-    '@input.Affinity': 'EMOTIONAL', 
-    '@input.MeetNeeds': 'RATIONAL', 
-    '@input.Dynamic': 'LEADERSHIP', 
-    '@input.Unique': 'UNIQUENESS',
-    'Meaningful': 'GRATIFICATION', 
-    'Different': 'DISTINCTION', 
-    'Salient': 'AMPLIFICATION',
-    'Power': 'POWER', 
-    'Premium v2': 'PREMIUM'}
-
 SHEET_IMAGE = 'image_sets'
 SHEET_DATA = 'data'
 SHEET_MODEL = 'model_spec'
@@ -108,28 +96,26 @@ def SelectFirstOrderDrivers(X: pd.DataFrame, y: pd.DataFrame, beta_tolerance=0.0
 ##################################################
 
 
-"""def CheckColumnsPresent(data:pd.DataFrame, cols: list) -> bool:
-    return all([col in data.columns for col in cols])"""
-
-
-
-class ExploratoryAnalysis: 
+class ImageStructureAnalysis: 
+    bn_ready: bool 
+    fod_ready: bool
 
     image_sets: ExtOrderedDict
     expl_graph_model_sets: dict[str: GraphicModel]
     bsa_models: dict[str: GraphicModel]
-    model_targets: list[str]
+    
+    model_targets: list[str] = None
+    mdf_based: bool = None
+
+    clean_soe_data: pd.DataFrame = None 
+    clean_targets_data: pd.DataFrame = None
 
     def __init__(self):
         self.bn_ready = False 
         self.fod_ready = False
         self.image_sets = ExtOrderedDict()
         self.expl_graph_model_sets = dict()
-
-        # remove later
-        self.mdf_based = True
-        self.model_targets = FACTORS
-    
+        self.bsa_models = dict()
 
     def __ReadImageSets(self): 
         data = pd.read_excel(self.data_file_name, sheet_name=SHEET_IMAGE, index_col=0)
@@ -150,64 +136,79 @@ class ExploratoryAnalysis:
                 "Wrong model spec columns. There are: {}. Expected: {}".format(spec.columns, EDGE_KEYS)
             spec = spec[spec.notna().all(axis=1)]
             self.bsa_models[name] = GraphicModel(spec)
-        print("Read model spec - Ok")
 
 
     def FullImageList(self):
         return self.image_sets.top()[1]
     
-    def ReadData_(self, mdf=True, targets: list[str] | str = None, stop_of_missing_cols=True):
-        if not mdf: 
-            assert targets is not None, "There must be target var if not MDF"
-            if isinstance(targets, str):
-                targets = [targets]
-        
+    def __SetModelTargets(self, mdf_based: bool, model_targets: str | list[str] | None) -> None: 
+        self.mdf_based = mdf_based
+        if self.mdf_based: 
+            self.model_targets = FACTORS
+            if model_targets:
+                print("Warning: model_targets={} disregarded as mdf is used".format(model_targets))
+            return
+        if model_targets is None:
+            raise ValueError("If no MDF, model_targets must be provided")
+        if isinstance(model_targets, list):
+            self.model_targets = model_targets
+        elif isinstance(model_targets, str):
+            self.model_targets = [model_targets]
+        else:
+            raise ValueError("Error: model_targets must be list[str] or str")
+    
+    def __ReadData(self):
         data = pd.read_excel(self.data_file_name, sheet_name=SHEET_DATA)
 
-        # na_filter
-        cols_to_check = targets + ['soe.IMG{:02d}_'.format(k) for k in self.FullImageList().keys()]
+        cols_to_check = (list(MDF_RENAMER.keys()) if self.mdf_based else self.model_targets) +\
+                        [SOE_COL_TEMPLATE.format(k) for k in self.FullImageList().keys()]
         missing_cols = utils.MissingColumn(data, cols_to_check)
+
         if missing_cols:
-            if stop_of_missing_cols:
-                raise ValueError("Missing columns in the data: {}".format(missing_cols))
+            if self.mdf_based:
+                raise ValueError("Error: Missing columns in the data: {}".format(missing_cols))
             else:
-                print("Missing columns in the data: {}".format(missing_cols))
-        na_filter = data[list(set(cols_to_check)-set(missing_cols))].notna().all(axis=1)
-
-        soe_renamer = {'soe.IMG{:02d}_'.format(k): v for k, v in self.FullImageList().items()}
-        self.clean_soe_data = data.loc[na_filter, soe_renamer.keys()].rename(columns=soe_renamer)
-        self.clean_mdf_data = data.loc[na_filter, list(set(targets) - set(missing_cols))]
-
-
-
-    def __ReadData(self): 
-        data = pd.read_excel(self.data_file_name, sheet_name=SHEET_DATA)
-
-        # dropna
-        img_cols = ['IMG{:02d}_'.format(k) for k in self.FullImageList().keys()]
-        data = data[data[img_cols].notna().all(axis=1)]
+                print("Warning: Check missing columns in the data: {}. It is ok only if they are constructs".format(missing_cols))
         
-        soe_renamer = {'soe.IMG{:02d}_'.format(k): v for k, v in self.FullImageList().items()}
-        if not utils.CheckColumnsPresent(data, soe_renamer.keys()):
-            raise ValueError("Not all SOE Images listed in first set are present in the data")
-        self.clean_soe_data = data[soe_renamer.keys()].rename(columns=soe_renamer)
+        na_filter = data[list(set(cols_to_check).difference(missing_cols))].notna().all(axis=1)
 
-        # not used yet 
-        #img_renamer = {'IMG{:02d}_'.format(k): v for k, v in self.FullImageList().items()}
-        #self.clean_img_data = data.rename(soe_renamer)
+        soe_renamer = {SOE_COL_TEMPLATE.format(k): v for k, v in self.FullImageList().items()}
+        self.clean_soe_data = data.loc[na_filter, soe_renamer.keys()].rename(columns=soe_renamer)
+        if self.mdf_based:
+            self.clean_targets_data = data.loc[na_filter, MDF_RENAMER.keys()].rename(columns=MDF_RENAMER)
+        else:
+            self.clean_targets_data = data.loc[na_filter, list(set(self.model_targets).difference(missing_cols))]
 
-        if not utils.CheckColumnsPresent(data, MDF_RENAMER.keys()):
-            raise ValueError("Not all MDF variables are present in the data. Expected: " + str(MDF_RENAMER.keys()))
-        self.clean_mdf_data = data[MDF_RENAMER.keys()].rename(columns=MDF_RENAMER)
-
-    def CleanSOEandMDFData(self): 
-        return pd.concat([self.clean_mdf_data, self.clean_soe_data], axis=1)
-
-    def ReadDataFile(self, data_file_name):
-        self.data_file_name = data_file_name
+    def InitAndReadFile(self, file_name, mdf_based, model_targets, read_model_spec):
+        self.data_file_name = file_name
+        self.__SetModelTargets(mdf_based, model_targets)
         self.__ReadImageSets()
         self.__ReadData()
-        print("Read File - Ok")
+
+        if read_model_spec: 
+            self.__ReadModelSpec()
+        
+        print("Info: Init and Read - Ok")
+        return self
+    
+    def Inspect(self):
+        print("MDF based-------- {}".format(self.mdf_based))
+        print("Targets---------- {}".format(self.model_targets))
+        print("Image sets--------{}".format(self.image_sets.keys()))
+        print("Model specs-------{}".format(self.bsa_models.keys()))
+        print("\nSOE data---------")
+        if self.clean_soe_data:
+            self.clean_soe_data.info(verbose=False, memory_usage=False)
+        else:
+            print('None')
+        print("\nTargets data-----")
+        if self.clean_targets_data:
+            self.clean_targets_data.info(verbose=False, memory_usage=False)
+        else:
+            print('None')
+    
+    def CleanSOEandMDFData(self): 
+        return pd.concat([self.clean_targets_data, self.clean_soe_data], axis=1)
 
     def ReportImageCrossCorrelations(self):
         corr_table = self.clean_soe_data.corr()
@@ -216,23 +217,23 @@ class ExploratoryAnalysis:
             if c == r:
                 corr_table.iloc[r, c] = np.nan
         self.reporter.AddTable(corr_table, 'SOE cross-correlations', conditional_formatting=True)
-        print("SOE cross-correlations - Ok")
+        print("Info: SOE cross-correlations - Ok")
 
     def ReportFAs(self): 
         for i in range(3, len(self.FullImageList()) + 1):
             self.reporter.AddTable(CalcFA(self.clean_soe_data, i), 
                                    'factor_solutions', 
                                    conditional_formatting=True)
-        print("SOE FAs - Ok")
+        print("Info: SOE FAs - Ok")
     
     def ReportSOEToEquityCorrelations(self):
-        data = pd.concat([self.clean_mdf_data, self.clean_soe_data], axis=1) 
+        data = pd.concat([self.clean_targets_data, self.clean_soe_data], axis=1) 
         self.reporter.AddTable(
-            data.corr().loc[self.clean_soe_data.columns, self.clean_mdf_data.columns],
+            data.corr().loc[self.clean_soe_data.columns, self.clean_targets_data.columns],
             'SOE to equity correlations', 
             conditional_formatting=True
         )
-        print("SOE to equity correlations - Ok")
+        print("Info: SOE to equity correlations - Ok")
 
     def ReportBayesNetworkGraphs(self): 
         for set_name, set_ in self.image_sets.items():
@@ -245,11 +246,10 @@ class ExploratoryAnalysis:
             self.expl_graph_model_sets[set_name].AppendEdges(g)
             self.reporter.AddImage(PlotGraph(g), 'Graphs_{}'.format(set_name), "AA1")
         self.bn_ready = True
-        print("Bayes nets graphs - Ok")
-    
+        print("Info: Bayes nets graphs - Ok")
 
     def ReportFirstOrderDrivers(self): 
-        Y = Standardize(self.clean_mdf_data, across_all_dataframe=False)
+        Y = Standardize(self.clean_targets_data, across_all_dataframe=False)
         XX = Standardize(self.clean_soe_data, across_all_dataframe=True)
         for set_name, set_ in self.image_sets.items():
             X = XX[set_.values()]
@@ -262,7 +262,7 @@ class ExploratoryAnalysis:
                         [TupleToEdgeDict((ix, target_name, EDGE_TYPE_PATH)) for ix, val in fod['Final Selection'].items() if val]
                     )
         self.fod_ready = True
-        print("First Order Drivers - Ok")
+        print("Info: First Order Drivers - Ok")
 
     def ReportBSAGraphs(self):
         if not self.bn_ready:
@@ -294,37 +294,87 @@ class ExploratoryAnalysis:
                 PlotGraph(CalcTree(self.clean_soe_data, col).to_graphviz()), 
                 'TREE {}'.format(col)
             )
-        print("Tree Graphs - Ok")
-    
-    def ExploratoryReport(self, data_file_name, 
-                          correlations=True,
-                          factor_solutions=False,
-                          BSA_graphs=True, 
-                          tree_graphs=False):
-        self.reporter = ExcelReportBuilder(data_file_name.split('.')[0] + '_exploratory_report.xlsx')
-        self.ReadDataFile(data_file_name)
+        print("Info: Tree Graphs - Ok")
+
+    def EploratoryAnalisys(self,
+                           file_name, 
+                           mdf_based, 
+                           model_targets=None,
+                           report_correlations=True,
+                           report_factor_solutions=False,
+                           report_auto_graphs=False,
+                           report_tree_graphs=False):
+        # performs analysis, drops Excel report
+
+        self.InitAndReadFile(file_name, mdf_based=mdf_based, model_targets=model_targets, read_model_spec=False)
+        self.reporter = ExcelReportBuilder(file_name.split('.')[0] + '_exploratory_report.xlsx')
         
-        if correlations:
+        if report_correlations:
             self.ReportImageCrossCorrelations()
             self.ReportSOEToEquityCorrelations()
-        if factor_solutions:
+        if report_factor_solutions:
             self.ReportFAs()
-        if BSA_graphs:
+        if report_auto_graphs:
             self.ReportBSAGraphs()
-        if tree_graphs:
+        if report_tree_graphs:
             self.ReportTreeGraphs()
 
         self.reporter.SaveToFile()
 
+    def BSAAnalysis(self, 
+                    file_name, 
+                    mdf_based, 
+                    model_targets=None):
+        
+        self.InitAndReadFile(file_name, mdf_based=mdf_based, model_targets=model_targets, read_model_spec=True)
+        for model in self.bsa_models.keys():
+            self.__BSAReport(model)
+
+    def __BSAReport(self, spec_name):
+        reporter = ExcelReportBuilder("{}_bsa_report_{}.xlsx ".format(self.data_file_name.split('.')[0], spec_name))
+        if self.mdf_based:
+            self.bsa_models[spec_name].AppendMDFGraph()
+        self.bsa_models[spec_name].FitPLSPM(self.CleanSOEandMDFData())
+
+        reporter.AddTable(
+            pd.concat(
+                [self.bsa_models[spec_name].PathLenFromAllNodes(t) for t in self.model_targets], 
+                axis=1
+            ).set_axis(self.model_targets, axis='columns'), 
+            "Importance"
+        )
+
+        reporter.AddImage(
+            PlotGraph(self.bsa_models[spec_name].Graph(add_pls_weights=False, exclude_mdf=True)), 
+            'GRAPHS'
+        )
+        reporter.AddImage(
+            PlotGraph(self.bsa_models[spec_name].Graph(add_pls_weights=True, exclude_mdf=False)), 
+            'GRAPHS',
+            "AA1"
+        )
+        
+        for node in self.bsa_models[spec_name].model_spec.Nodes():
+            if (node in MDFS) or (node in POWER_PREMIUM) or (node in self.model_targets):
+                continue
+            reporter.AddImage(
+                PlotGraph(self.bsa_models[spec_name].SubgraphFromNodes(node)), 
+                node
+        )
+
+        reporter.SaveToFile()
+        print("Info: model {} complete".format(spec_name))
+
+
     
-    def BSAReports(self, data_file_name):
+    """def BSAReports(self, data_file_name):
         self.ReadDataFile(data_file_name)
         self.__ReadModelSpec()
 
         for model in self.bsa_models.keys():
-            self.__OneBSAReport(model)
+            self.__OneBSAReport(model)"""
 
-    def __OneBSAReport(self, spec_name):
+    """def __OneBSAReport(self, spec_name):
         reporter = ExcelReportBuilder("{}_bsa_report_{}.xlsx ".format(self.data_file_name.split('.')[0], spec_name))
         self.bsa_models[spec_name].AppendMDFGraph()
         self.bsa_models[spec_name].FitPLSPM(self.CleanSOEandMDFData())
@@ -356,92 +406,12 @@ class ExploratoryAnalysis:
                 "GR_FROM_{}".format(node)
         )
 
-        reporter.SaveToFile()
-
-    def DEBUG(self, 
-              data_file_name, 
-              mdf_based=True, targets=None,
-              correlations=True,
-              factor_solutions=False,
-              BSA_graphs=True,
-              tree_graphs=False):
-        
-        self.mdf_based = mdf_based
-        if self.mdf_based:
-            self.model_targets = FACTORS
-        else:
-            self.model_targets = targets if isinstance(targets, list) else [targets]
-        self.data_file_name = data_file_name
-        
-        self.__ReadImageSets()
-        self.ReadData_(mdf=mdf_based, targets=targets)
-        
-        self.reporter = ExcelReportBuilder(data_file_name.split('.')[0] + '_exploratory_report.xlsx')
-        
-        if correlations:
-            self.ReportImageCrossCorrelations()
-            self.ReportSOEToEquityCorrelations()
-        if factor_solutions:
-            self.ReportFAs()
-        if BSA_graphs:
-            #self.ReportFirstOrderDrivers()
-            #self.ReportBayesNetworkGraphs()
-            self.ReportBSAGraphs()
-        if tree_graphs:
-            self.ReportTreeGraphs()
-
-        self.reporter.SaveToFile()
+        reporter.SaveToFile()"""
 
 
-    def BSAReports_DEBUG(self, data_file_name, 
-                         mdf_based=True, 
-                         targets=None):
-        
-        self.mdf_based = mdf_based
-        if self.mdf_based:
-            self.model_targets = FACTORS
-        else:
-            self.model_targets = targets if isinstance(targets, list) else [targets]
-        self.data_file_name = data_file_name
 
-        self.__ReadImageSets()
-        self.ReadData_(mdf=False, targets=targets, stop_of_missing_cols=False)
-        self.__ReadModelSpec()
 
-        for model in self.bsa_models.keys():
-            self.__OneBSAReport_DEBUG(model)
+
 
         
-    def __OneBSAReport_DEBUG(self, spec_name):
-        reporter = ExcelReportBuilder("{}_bsa_report_{}.xlsx ".format(self.data_file_name.split('.')[0], spec_name))
-        if self.mdf_based:
-            self.bsa_models[spec_name].AppendMDFGraph()
-        self.bsa_models[spec_name].FitPLSPM(self.CleanSOEandMDFData())
-
-        reporter.AddTable(
-            pd.concat(
-                [self.bsa_models[spec_name].PathLenFromAllNodes(t) for t in self.model_targets], 
-                axis=1
-            ).set_axis(self.model_targets, axis='columns'), 
-            "importance"
-        )
-
-        reporter.AddImage(
-            PlotGraph(self.bsa_models[spec_name].Graph(add_pls_weights=False, exclude_mdf=True)), 
-            'TOTAL_GRAPHS'
-        )
-        reporter.AddImage(
-            PlotGraph(self.bsa_models[spec_name].Graph(add_pls_weights=True, exclude_mdf=False)), 
-            'TOTAL_GRAPHS',
-            "AA1"
-        )
-        
-        for node in self.bsa_models[spec_name].model_spec.Nodes():
-            if (node in MDFS) or (node in POWER_PREMIUM) or (node in self.model_targets):
-                continue
-            reporter.AddImage(
-                PlotGraph(self.bsa_models[spec_name].SubgraphFromNodes(node)), 
-                "GR_FROM_{}".format(node)
-        )
-
-        reporter.SaveToFile()
+    

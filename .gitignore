@@ -3,6 +3,7 @@
 *.csv
 *.pickle
 data/
+drafts/
 
 
 src_*
