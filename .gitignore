@@ -2,8 +2,10 @@
 *.pptx
 *.csv
 *.pickle
+*.ipynb
 data/
 drafts/
+.vscode/
 
 
 src_*

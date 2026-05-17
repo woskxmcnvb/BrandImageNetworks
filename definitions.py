@@ -53,4 +53,4 @@ EDGE_TYPE_CORR = 'correlation'
 EDGE_TYPES = ['path', 'correlation', 'mdf']
 
 
-SOE_COL_TEMPLATE = 'soe.IMG{:02d}_'
+#SOE_COL_TEMPLATE = 'soe.IMG{:02d}_'

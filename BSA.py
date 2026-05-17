@@ -5,6 +5,8 @@ import pandas as pd
 import numpy as np
 from itertools import product
 
+from typing import Dict, List
+
 from openpyxl import load_workbook
 
 
@@ -14,7 +16,7 @@ from GraphicModel import GraphicModel, PlotGraph, TupleToEdgeDict
 from factor_analyzer import FactorAnalyzer
 
 from pgmpy.estimators import HillClimbSearch, TreeSearch
-from pgmpy.estimators import BicScore
+from pgmpy.estimators import BIC as BicScore
 
 import statsmodels.api as sm
 from sklearn.feature_selection import SequentialFeatureSelector
@@ -101,10 +103,10 @@ class ImageStructureAnalysis:
     fod_ready: bool
 
     image_sets: ExtOrderedDict
-    expl_graph_model_sets: dict[str: GraphicModel]
-    bsa_models: dict[str: GraphicModel]
+    expl_graph_model_sets: Dict[str, GraphicModel]
+    bsa_models: Dict[str, GraphicModel]
     
-    model_targets: list[str] = None
+    model_targets: List[str] = None
     mdf_based: bool = None
 
     clean_soe_data: pd.DataFrame = None 
@@ -131,7 +133,7 @@ class ImageStructureAnalysis:
             name = sheet.split(SHEET_MODEL)[1]
             if name == '':
                 name = str(len(self.bsa_models))
-            spec = pd.read_excel(self.data_file_name, sheet_name=SHEET_MODEL)
+            spec = pd.read_excel(self.data_file_name, sheet_name=sheet)
             assert utils.AllElementsAreThere(EDGE_KEYS, spec.columns),\
                 "Wrong model spec columns. There are: {}. Expected: {}".format(spec.columns, EDGE_KEYS)
             spec = spec[spec.notna().all(axis=1)]
@@ -161,7 +163,7 @@ class ImageStructureAnalysis:
         data = pd.read_excel(self.data_file_name, sheet_name=SHEET_DATA)
 
         cols_to_check = (list(MDF_RENAMER.keys()) if self.mdf_based else self.model_targets) +\
-                        [SOE_COL_TEMPLATE.format(k) for k in self.FullImageList().keys()]
+                        ["{}".format(k) for k in self.FullImageList().keys()] #[SOE_COL_TEMPLATE.format(k) for k in self.FullImageList().keys()]
         missing_cols = utils.MissingColumn(data, cols_to_check)
 
         if missing_cols:
@@ -172,14 +174,23 @@ class ImageStructureAnalysis:
         
         na_filter = data[list(set(cols_to_check).difference(missing_cols))].notna().all(axis=1)
 
-        soe_renamer = {SOE_COL_TEMPLATE.format(k): v for k, v in self.FullImageList().items()}
+        soe_renamer = {"{}".format(k): v for k, v in self.FullImageList().items()}
         self.clean_soe_data = data.loc[na_filter, soe_renamer.keys()].rename(columns=soe_renamer)
         if self.mdf_based:
             self.clean_targets_data = data.loc[na_filter, MDF_RENAMER.keys()].rename(columns=MDF_RENAMER)
         else:
             self.clean_targets_data = data.loc[na_filter, list(set(self.model_targets).difference(missing_cols))]
 
-    def InitAndReadFile(self, file_name, mdf_based, model_targets, read_model_spec):
+    def InitAndReadFile(self, 
+                        file_name: str, 
+                        mdf_based: bool, 
+                        model_targets: str | List[str]=None, 
+                        read_model_spec: bool=True):
+        """
+        инициализирует модель из файла, 
+        не оценивает модель
+        """
+        
         self.data_file_name = file_name
         self.__SetModelTargets(mdf_based, model_targets)
         self.__ReadImageSets()
@@ -307,7 +318,7 @@ class ImageStructureAnalysis:
         # performs analysis, drops Excel report
 
         self.InitAndReadFile(file_name, mdf_based=mdf_based, model_targets=model_targets, read_model_spec=False)
-        self.reporter = ExcelReportBuilder(file_name.split('.')[0] + '_exploratory_report.xlsx')
+        self.reporter = ExcelReportBuilder(file_name.split('.xlsx')[0] + '_exploratory_report.xlsx')
         
         if report_correlations:
             self.ReportImageCrossCorrelations()
@@ -320,6 +331,7 @@ class ImageStructureAnalysis:
             self.ReportTreeGraphs()
 
         self.reporter.SaveToFile()
+        print("Exploratory report complete!")
 
     def BSAAnalysis(self, 
                     file_name, 
@@ -330,8 +342,8 @@ class ImageStructureAnalysis:
         for model in self.bsa_models.keys():
             self.__BSAReport(model)
 
-    def __BSAReport(self, spec_name):
-        reporter = ExcelReportBuilder("{}_bsa_report_{}.xlsx ".format(self.data_file_name.split('.')[0], spec_name))
+    def __BSAReport(self, spec_name: str):
+        reporter = ExcelReportBuilder("{}_bsa_report_{}.xlsx ".format(self.data_file_name.split('.xlsx')[0], spec_name))
         if self.mdf_based:
             self.bsa_models[spec_name].AppendMDFGraph()
         self.bsa_models[spec_name].FitPLSPM(self.CleanSOEandMDFData())
@@ -364,49 +376,6 @@ class ImageStructureAnalysis:
 
         reporter.SaveToFile()
         print("Info: model {} complete".format(spec_name))
-
-
-    
-    """def BSAReports(self, data_file_name):
-        self.ReadDataFile(data_file_name)
-        self.__ReadModelSpec()
-
-        for model in self.bsa_models.keys():
-            self.__OneBSAReport(model)"""
-
-    """def __OneBSAReport(self, spec_name):
-        reporter = ExcelReportBuilder("{}_bsa_report_{}.xlsx ".format(self.data_file_name.split('.')[0], spec_name))
-        self.bsa_models[spec_name].AppendMDFGraph()
-        self.bsa_models[spec_name].FitPLSPM(self.CleanSOEandMDFData())
-
-        targets = POWER_PREMIUM + MDFS + FACTORS
-        reporter.AddTable(
-            pd.concat(
-                [self.bsa_models[spec_name].PathLenFromAllNodes(t) for t in targets], 
-                axis=1
-            ).set_axis(targets, axis='columns'), 
-            "importance"
-        )
-
-        reporter.AddImage(
-            PlotGraph(self.bsa_models[spec_name].Graph(add_pls_weights=False, exclude_mdf=True)), 
-            'TOTAL_GRAPHS'
-        )
-        reporter.AddImage(
-            PlotGraph(self.bsa_models[spec_name].Graph(add_pls_weights=True, exclude_mdf=False)), 
-            'TOTAL_GRAPHS',
-            "AA1"
-        )
-        
-        for node in self.bsa_models[spec_name].model_spec.Nodes():
-            if (node in MDFS) or (node in POWER_PREMIUM):
-                continue
-            reporter.AddImage(
-                PlotGraph(self.bsa_models[spec_name].SubgraphFromNodes(node)), 
-                "GR_FROM_{}".format(node)
-        )
-
-        reporter.SaveToFile()"""
 
 
 

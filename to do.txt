@@ -1,0 +1,2 @@
+check for / in image names 
+image numeration 

@@ -1,6 +1,8 @@
 import io
 from PIL import Image
 
+from typing import List, Dict, Set
+
 import pandas as pd
 
 import pygraphviz as pgv
@@ -147,7 +149,7 @@ class ModelSpec:
             raise ValueError("GraphicModel: unknown input to ctor")
         self.ConsistencyCheck()
 
-    def Edges(self, include_type=False) -> list[tuple]:
+    def Edges(self, include_type=False) -> List[tuple]:
         return [e.AsTouple(include_type=include_type) for e in self.edges]
     
     def ToDF(self):
@@ -183,19 +185,19 @@ class ModelSpec:
 
         return desc
 
-    def Nodes(self) -> list[str]:
+    def Nodes(self) -> List[str]:
         return list(self.nodes.keys()) 
     
     def HasConstruct(self, name: str) -> bool:
         return name in self.constructs.keys()
     
-    def InEdges(self, node) -> set[str]:
+    def InEdges(self, node) -> Set[str]:
         return self.nodes[node].InEdges()
     
-    def OutEdges(self, node) -> set[str]:
+    def OutEdges(self, node) -> Set[str]:
         return self.nodes[node].OutEdges()
 
-    def __AddNode(self, name: str):
+    def __AddNode(self, name: str) -> None:
         if not name in self.nodes.keys():
             self.nodes[name] = self.Node(name)
 
@@ -317,14 +319,16 @@ class GraphicModel:
             add_pls_weights = False
         
         graph = pgv.AGraph(directed=True)
-        for edge in self.model_spec.Edges(include_type=True):
-            if exclude_mdf and edge[2] == EDGE_TYPE_MDF:
+        for from_, to_, type_ in self.model_spec.Edges(include_type=True):
+            if exclude_mdf and type_ == EDGE_TYPE_MDF:
                 continue
             if add_pls_weights: 
-                wt = self.plspm.GetPathCoef(edge)
-                graph.add_edge(*edge[:2], label='{:.2f}'.format(wt), penwidth=wt * 10)
+                wt = self.plspm.GetPathCoef((from_, to_))
+                graph.add_edge(from_, to_, label='{:.2f}'.format(wt), penwidth=wt * 10)
             else:
-                graph.add_edge(*edge[:2])
+                graph.add_edge(from_, to_, 
+                               dir=('both' if type_==EDGE_TYPE_CORR else None),
+                               style=('dashed' if type_==EDGE_TYPE_CORR else 'solid'))
         
         return graph
     
@@ -368,12 +372,10 @@ class GraphicModel:
 
         return sub_graph
     
-    def PathLen(self, start_node: str, end_nodes: list[str] | str):
+    def __PathLen(self, start_node: str, end_node: str) -> float:
         assert self.plspm, "Model not fit. Run .Fit... first"
-        if isinstance(end_nodes, str): 
-            end_nodes = [end_nodes]
-        elif not isinstance(end_nodes, list):
-            raise ValueError(".PathLen: Wrong to_ definition")
+        assert isinstance(end_node, str), \
+            "GraphicModel.PathLen: Wrong end_node definition {}, must be str".format(end_node)
         
         total_route_len = 0
         
@@ -381,7 +383,7 @@ class GraphicModel:
             nonlocal total_route_len
             for to_ in self.model_spec.OutEdges(from_):
                 carry_to_pass = carry * self.plspm.GetPathCoef((from_, to_))
-                if to_ in end_nodes: 
+                if to_ == end_node: 
                     total_route_len += carry_to_pass
                 else:
                     _walk_down(to_, carry_to_pass)
@@ -389,17 +391,46 @@ class GraphicModel:
         _walk_down(start_node, 1)
         return total_route_len
     
-    def PathLenFromAllNodes(self, end_nodes: list[str] | str):
-        if isinstance(end_nodes, str): 
-            end_nodes = [end_nodes]
-        elif not isinstance(end_nodes, list):
-            raise ValueError(".PathLenFromAllNodes: Wrong to_ definition")
+
+    def PathLen(self, start_node: str, end_node: str) -> float:
+        assert self.plspm, "Model not fit. Run .Fit... first"
+        assert isinstance(end_node, str), \
+            "GraphicModel.PathLen: Wrong end_node definition {}, must be str".format(end_node)
         
-        assert utils.AllElementsAreThere(end_nodes, self.model_spec.Nodes()), "Not all nodes are present in the model"
+        total_route_len = 0
+        
+        # Добавляем аргумент visited, который хранит узлы текущего пути
+        def _walk_down(from_: str, carry, visited: set):
+            nonlocal total_route_len
+            
+            # Копируем множество и добавляем текущий узел, чтобы зафиксировать его посещение
+            current_visited = visited | {from_}
+            
+            for to_ in self.model_spec.OutEdges(from_):
+                # Проверяем, не образуется ли цикл. Если узел 'to_' уже был в пути, пропускаем его
+                if to_ in current_visited:
+                    continue
+                    
+                carry_to_pass = carry * self.plspm.GetPathCoef((from_, to_))
+                
+                if to_ == end_node: 
+                    total_route_len += carry_to_pass
+                else:
+                    # Передаем обновленное множество посещенных узлов дальше по ветке
+                    _walk_down(to_, carry_to_pass, current_visited)
+
+        # Инициализируем обход с пустым множеством посещенных вершин
+        _walk_down(start_node, 1, set())
+        return total_route_len
+    
+    def PathLenFromAllNodes(self, end_node: str) -> pd.Series: 
+        assert isinstance(end_node, str), \
+            "GraphicModel.PathLenFromAllNodes: Wrong end_node definition {}, must be str".format(end_node)
+        assert end_node in self.model_spec.Nodes(), "GraphicModel.PathLenFromAllNodes: {} not in the model".format(end_node)
         
         result = {}
         for node in self.model_spec.Nodes():
-            result[node] = self.PathLen(node, end_nodes)
+            result[node] = self.PathLen(node, end_node)
         return pd.Series(result).sort_values(ascending=False)
     
 

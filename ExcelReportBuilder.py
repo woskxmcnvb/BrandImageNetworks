@@ -24,7 +24,7 @@ class ExcelReportBuilder:
     @staticmethod
     def __GetSheetPtr(wb: Workbook, name: str):
         if name not in wb.sheetnames:
-            return wb.create_sheet(name)
+            return wb.create_sheet(name[:31])
         else: 
             return wb[name]
 
