@@ -98,18 +98,18 @@ class ModelSpec:
         def OutEdges(self):
             return self.out_edges
 
-    edges: list[Edge]
-    constructs: dict[str, Construct]
-    nodes: dict[str, Node]
+    edges: List[Edge]
+    constructs: Dict[str, Construct]
+    nodes: Dict[str, Node]
 
-    def __init__(self, spec: list | pd.DataFrame | pgv.AGraph = None) -> None:
+    def __init__(self, spec: List | pd.DataFrame | pgv.AGraph = None) -> None:
         self.edges = list()
         self.constructs = dict()
         self.nodes = dict()
         if spec is not None:
             self.AppendEdges(spec)
 
-    def __FromList(self, spec: list[dict]):
+    def __FromList(self, spec: List[Dict]):
         # private потому что нет consistency check
         for item in spec: 
             from_, to_, type_ = item[FROM_KEY], item[TO_KEY], item[TYPE_KEY]

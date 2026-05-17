@@ -342,7 +342,7 @@ class ImageStructureAnalysis:
         for model in self.bsa_models.keys():
             self.__BSAReport(model)
 
-    def __BSAReport(self, spec_name: str):
+    def __BSAReport(self, spec_name: str) -> None:
         reporter = ExcelReportBuilder("{}_bsa_report_{}.xlsx ".format(self.data_file_name.split('.xlsx')[0], spec_name))
         if self.mdf_based:
             self.bsa_models[spec_name].AppendMDFGraph()
