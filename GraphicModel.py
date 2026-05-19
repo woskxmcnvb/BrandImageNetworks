@@ -381,8 +381,9 @@ class GraphicModel:
             edge = (node, linked_node) if is_downstream else (linked_node, node)
             if edge not in visited_edges:
                 func(edge)
-                visited_edges.add((node, linked_node))
-                visited_edges.add((linked_node, node))
+                visited_edges.add(edge)
+                #visited_edges.add((node, linked_node))
+                #visited_edges.add((linked_node, node))
                 self._walk(linked_node, get_neighbors, is_downstream, func, visited_edges)
     
 

@@ -62,5 +62,3 @@ EDGE_TYPES = ['path', 'correlation', 'mdf']
 pls строится из списка ребер с типами. там свои заморочки
 
 """
-
-#SOE_COL_TEMPLATE = 'soe.IMG{:02d}_'

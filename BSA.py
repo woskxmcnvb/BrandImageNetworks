@@ -157,13 +157,13 @@ class ImageStructureAnalysis:
         elif isinstance(model_targets, str):
             self.model_targets = [model_targets]
         else:
-            raise ValueError("Error: model_targets must be list[str] or str")
+            raise ValueError("Error: model_targets must be List[str] or str")
     
     def __ReadData(self):
         data = pd.read_excel(self.data_file_name, sheet_name=SHEET_DATA)
 
         cols_to_check = (list(MDF_RENAMER.keys()) if self.mdf_based else self.model_targets) +\
-                        ["{}".format(k) for k in self.FullImageList().keys()] #[SOE_COL_TEMPLATE.format(k) for k in self.FullImageList().keys()]
+                        ["{}".format(k) for k in self.FullImageList().keys()] 
         missing_cols = utils.MissingColumn(data, cols_to_check)
 
         if missing_cols:
@@ -227,21 +227,21 @@ class ImageStructureAnalysis:
         for r, c in product(range(len(corr_table)), range(len(corr_table))):
             if c == r:
                 corr_table.iloc[r, c] = np.nan
-        self.reporter.AddTable(corr_table, 'SOE cross-correlations', conditional_formatting=True)
+        self.reporter.AddTable(table=corr_table, page_name='SOE cross-correlations', conditional_formatting=True)
         print("Info: SOE cross-correlations - Ok")
 
     def ReportFAs(self): 
         for i in range(3, len(self.FullImageList()) + 1):
-            self.reporter.AddTable(CalcFA(self.clean_soe_data, i), 
-                                   'factor_solutions', 
+            self.reporter.AddTable(table=CalcFA(self.clean_soe_data, i), 
+                                   page_name='factor_solutions', 
                                    conditional_formatting=True)
         print("Info: SOE FAs - Ok")
     
     def ReportSOEToEquityCorrelations(self):
         data = pd.concat([self.clean_targets_data, self.clean_soe_data], axis=1) 
         self.reporter.AddTable(
-            data.corr().loc[self.clean_soe_data.columns, self.clean_targets_data.columns],
-            'SOE to equity correlations', 
+            table=data.corr().loc[self.clean_soe_data.columns, self.clean_targets_data.columns],
+            page_name='SOE to equity correlations', 
             conditional_formatting=True
         )
         print("Info: SOE to equity correlations - Ok")
@@ -266,8 +266,9 @@ class ImageStructureAnalysis:
             X = XX[set_.values()]
             for target_name, y in Y.items():
                 fod = CalcLinRegWithVarSelect(X, y)
-                # !!!!!!!!!!!!!!!!! ЗАГОЛОВОК TO REPORT
-                self.reporter.AddTable(fod, 'FOD {}'.format(set_name))
+                self.reporter.AddTable(table=fod, 
+                                       page_name='FOD {}'.format(set_name),
+                                       title=target_name)
                 if target_name in self.model_targets:
                     self.expl_graph_model_sets[set_name].AppendEdges(
                         [TupleToEdgeDict((ix, target_name, EDGE_TYPE_PATH)) for ix, val in fod['Final Selection'].items() if val]
@@ -295,8 +296,9 @@ class ImageStructureAnalysis:
                 page_name, "AA1"
             )
             self.reporter.AddTable(
-                self.expl_graph_model_sets[set_name].model_spec.ToDF(),
-                page_name, drop_index=True
+                table=self.expl_graph_model_sets[set_name].model_spec.ToDF(),
+                page_name=page_name, 
+                drop_index=True
             )
 
     def ReportTreeGraphs(self):
@@ -348,12 +350,17 @@ class ImageStructureAnalysis:
             self.bsa_models[spec_name].AppendMDFGraph()
         self.bsa_models[spec_name].FitPLSPM(self.CleanSOEandMDFData())
 
+        # таблица важностей
+        if self.mdf_based:
+            importance_targets = FACTORS + MDFS + POWER_PREMIUM
+        else: 
+            importance_targets = self.model_targets
         reporter.AddTable(
-            pd.concat(
-                [self.bsa_models[spec_name].PathLenFromAllNodes(t) for t in self.model_targets], 
-                axis=1
-            ).set_axis(self.model_targets, axis='columns'), 
-            "Importance"
+            table=pd.concat(
+                    [self.bsa_models[spec_name].PathLenFromAllNodes(t) for t in importance_targets], 
+                    axis=1
+                ).set_axis(importance_targets, axis='columns'), 
+            page_name="Importance"
         )
 
         reporter.AddImage(

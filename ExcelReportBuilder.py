@@ -2,6 +2,7 @@ from openpyxl import Workbook
 from openpyxl.drawing.image import Image
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.styles import Font
 
 import io
 
@@ -18,8 +19,26 @@ class ExcelReportBuilder:
     def AddImage(self, stream: io.BytesIO, page_name: str, position: str="A1"):
         self.images_.append({'page': page_name, 'image': Image(stream), 'position': position})
     
-    def AddTable(self, table: pd.DataFrame, page_name: str, drop_index=False, conditional_formatting=False):
-        self.tables_.append({'page': page_name, 'table': table, 'index': not(drop_index), 'conditional_formatting': conditional_formatting})
+    """def AddTable(self, table: pd.DataFrame, page_name: str, drop_index=False, conditional_formatting=False):
+        self.tables_.append({'page': page_name, 'table': table, 'index': not(drop_index), 'conditional_formatting': conditional_formatting})"""
+
+    def AddTable(self, 
+                table: pd.DataFrame, 
+                page_name: str, 
+                title: str = None, 
+                description: str = None, 
+                drop_index: bool = False, 
+                conditional_formatting: bool = False):
+        self.tables_.append(
+            {
+                'title': title, 
+                'description': description,
+                'page': page_name,
+                'table': table, 
+                'index': not(drop_index), 
+                'conditional_formatting': conditional_formatting
+            }
+        )
 
     @staticmethod
     def __GetSheetPtr(wb: Workbook, name: str):
@@ -32,11 +51,26 @@ class ExcelReportBuilder:
     def SaveToFile(self):
         wb = Workbook()
         
+        #Writing tables
         for tab in self.tables_:
             ws = ExcelReportBuilder.__GetSheetPtr(wb, tab['page'])
-            start_row = ws.max_row + 1
+            start_row = 1 if ws.max_row == 1 else ws.max_row + 2
+
+            if tab['title']: 
+                ws.cell(start_row, 1, tab['title']).font = Font(bold=True)
+                start_row += 1
+
+            if tab['description']: 
+                ws.cell(start_row, 1, tab['description'])
+                start_row += 1
+
             for r in dataframe_to_rows(tab['table'], index=tab['index'], header=True):
                 ws.append(r)
+
+            for r in range(start_row, ws.max_row+1):
+                for cell in ws[r]:
+                    cell.style = 'Pandas'
+
             if tab['conditional_formatting']:
                 formatting_range = '{}{}:{}'.format(
                     ('A' if not tab['index'] else 'B'), 
