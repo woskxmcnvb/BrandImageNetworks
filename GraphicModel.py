@@ -1,7 +1,8 @@
 import io
 from PIL import Image
+from functools import partial
 
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Tuple, Callable
 
 import pandas as pd
 
@@ -79,8 +80,8 @@ class ModelSpec:
 
     class Node: 
         name: str
-        in_edges: set[str]
-        out_edges: set[str]
+        in_edges: Set[str]
+        out_edges: Set[str]
         def __init__(self, name: str):
             self.name = name
             self.in_edges = set()
@@ -124,6 +125,9 @@ class ModelSpec:
                 self.__AddNode(to_)
                 self.nodes[to_].AddInEdge(from_)
                 self.nodes[from_].AddOutEdge(to_)
+                if type_ == EDGE_TYPE_CORR:
+                    self.nodes[from_].AddInEdge(to_)
+                    self.nodes[to_].AddOutEdge(from_)
             else:
                 raise ValueError("Wrong LV definition: {}".format(item))
     
@@ -149,7 +153,7 @@ class ModelSpec:
             raise ValueError("GraphicModel: unknown input to ctor")
         self.ConsistencyCheck()
 
-    def Edges(self, include_type=False) -> List[tuple]:
+    def Edges(self, include_type=False) -> List[Tuple[str, str, str]]:
         return [e.AsTouple(include_type=include_type) for e in self.edges]
     
     def ToDF(self):
@@ -233,9 +237,11 @@ class SemopyModel:
 class PLSPMModel:
     model: Plspm | None = None
     config: c.Config | None = None
+    fake_variables: Set[str] = None
 
     def __init__(self, scaled=False):
         self.nodes = list()
+        self.fake_variables = set()
         self.scaled = scaled
 
     def ConfigFromModel(self, model: ModelSpec): 
@@ -244,10 +250,20 @@ class PLSPMModel:
 
         # path model
         self.structure = c.Structure()
-        for from_, to_ in model.Edges(include_type=False): 
-            self.structure.add_path(['lv_{}'.format(from_)], ['lv_{}'.format(to_)])
-            lvs_to_create.add(from_)  
-            lvs_to_create.add(to_)
+        for from_, to_, type_ in model.Edges(include_type=True): 
+            if type_ == EDGE_TYPE_CORR:
+                lvs_to_create.add(from_)  
+                lvs_to_create.add(to_)
+                lvs_to_create.add("fake_{}".format(from_)) 
+                lvs_to_create.add("fake_{}".format(to_))
+                self.fake_variables.add(from_)
+                self.fake_variables.add(to_)
+                self.structure.add_path(['lv_fake_{}'.format(from_)], ['lv_{}'.format(to_)])
+                self.structure.add_path(['lv_fake_{}'.format(to_)], ['lv_{}'.format(from_)])
+            else: 
+                lvs_to_create.add(from_)  
+                lvs_to_create.add(to_)
+                self.structure.add_path(['lv_{}'.format(from_)], ['lv_{}'.format(to_)])
         
         self.config = c.Config(self.structure.path(), scaled=self.scaled)
         
@@ -266,18 +282,39 @@ class PLSPMModel:
         
     def Fit(self, data: pd.DataFrame):
         assert self.config, "Run .ConfgFromEdges first"
+        data = data.copy()
+        for fv in self.fake_variables:
+            data["fake_{}".format(fv)] = data[fv]
         self.model = Plspm(data, self.config, Scheme.CENTROID)
         return self
 
-    def GetPathCoefs(self): 
+    def GetPathCoefs(self) -> pd.DataFrame: 
         assert self.model, "Run .Fit first"
         return self.model.path_coefficients()
     
-    def GetPathCoef(self, edge: tuple):
-        edge = edge[:2]
+    def GetPathCoef(self, from_: str, to_: str, type_: str=None) -> float | Tuple[float]:
+        """
+        если не указан тип, то возвращается одно число, 
+        даже если это correlation - число соотвествующее направлению связи
+        если передан тип и это correlation то возвращается пара чисел
+        """
+        
         assert self.model, "Run .Fit first"
-        from_, to_ = ['lv_{}'.format(node) for node in edge]
-        return self.GetPathCoefs().loc[to_, from_]
+        coefs = self.GetPathCoefs()
+        
+        if type_ is None:
+            # на случай если эта связь является корреляцией то будет 2 столбца from_
+            # фейковый и настоящий - их нужно просто сложить 
+            from_cols = [c for c in coefs.columns if c.endswith(from_)]
+            
+            # даже если связь двунаправленная, когда не указан тип, 
+            # предполагаем что нужно только указанное направление связи
+            return coefs[from_cols].sum(axis=1)["lv_{}".format(to_)]
+        elif type_ in [EDGE_TYPE_MDF, EDGE_TYPE_PATH]: 
+            return coefs.loc["lv_{}".format(to_), "lv_{}".format(from_)]
+        elif type_ == EDGE_TYPE_CORR:
+            e = (from_, to_)
+            return coefs.loc[["lv_{}".format(v) for v in e], ["lv_fake_{}".format(v) for v in e]].sum().tolist()
 
 
 class GraphicModel:
@@ -291,7 +328,7 @@ class GraphicModel:
     plspm: PLSPMModel | None = None
     model_spec: ModelSpec | None = None
 
-    def __init__(self, spec=None): 
+    def __init__(self, spec: pd.DataFrame=None): 
         self.model_spec = ModelSpec(spec)
 
     def ResetModels(self):
@@ -313,7 +350,10 @@ class GraphicModel:
         print(self.sem.Fit(data))
         #return self
 
-    def Graph(self, add_pls_weights=True, exclude_mdf=True):
+    def Graph(self, add_pls_weights=True, exclude_mdf=True) -> pgv.AGraph:
+        """
+        строит граф формата pgv.AGraph из ModelSpec
+        """
         if add_pls_weights and (self.plspm is None):
             print("Warning! PLS is not fit, building without PLS weights")
             add_pls_weights = False
@@ -322,33 +362,43 @@ class GraphicModel:
         for from_, to_, type_ in self.model_spec.Edges(include_type=True):
             if exclude_mdf and type_ == EDGE_TYPE_MDF:
                 continue
+            dir_ = 'both' if type_==EDGE_TYPE_CORR else None
+            style_ = 'dotted' if type_==EDGE_TYPE_CORR else 'solid'
             if add_pls_weights: 
-                wt = self.plspm.GetPathCoef((from_, to_))
-                graph.add_edge(from_, to_, label='{:.2f}'.format(wt), penwidth=wt * 10)
+                wt = self.plspm.GetPathCoef(from_, to_, type_)
+                # если correlation - то возвращается list - усредняем (потом можно улучшить)
+                if isinstance(wt, list): 
+                    wt = sum(wt) / 2
+                graph.add_edge(from_, to_, dir=dir_, style=style_,
+                               label='{:.2f}'.format(wt), 
+                               penwidth=wt * 10)
             else:
-                graph.add_edge(from_, to_, 
-                               dir=('both' if type_==EDGE_TYPE_CORR else None),
-                               style=('dashed' if type_==EDGE_TYPE_CORR else 'solid'))
-        
+                graph.add_edge(from_, to_, dir=dir_, style=style_)
         return graph
     
-    def SubgraphFromNodes(self, node: str | list[str], add_pls_weights=True, exclude_mdf=True): 
-        
-        def _walk_down(from_: str, func):
-            for to_ in self.model_spec.OutEdges(from_):
-                func((from_, to_))
-                _walk_down(to_, func)
+    def _walk(self, node: str, get_neighbors, is_downstream: bool, func: Callable, visited_edges: Set[str]):
+        for linked_node in get_neighbors(node):
+            edge = (node, linked_node) if is_downstream else (linked_node, node)
+            if edge not in visited_edges:
+                func(edge)
+                visited_edges.add((node, linked_node))
+                visited_edges.add((linked_node, node))
+                self._walk(linked_node, get_neighbors, is_downstream, func, visited_edges)
+    
 
-        def _walk_up(to_: str, func):
-            for from_ in self.model_spec.InEdges(to_):
-                func((from_, to_))
-                _walk_up(from_, func)
+    def SubgraphFromNodes(self, node: str | List[str], add_pls_weights=True, exclude_mdf=True): 
+        # Множество для хранения уже пройденных РЕБЕР (защита от циклов)
+        visited_edges = set()
 
-        def _add_edge(edge: tuple[str], graph: pgv.AGraph):
+        # Фиксируем направление движения, спецификацию графа и сет посещений
+        _walk_down = partial(self._walk, get_neighbors=self.model_spec.OutEdges, is_downstream=True, visited_edges=visited_edges)
+        _walk_up   = partial(self._walk, get_neighbors=self.model_spec.InEdges,  is_downstream=False, visited_edges=visited_edges)
+
+        def _add_edge(edge: Tuple[str], graph: pgv.AGraph):
             if exclude_mdf and ((edge[0] in MDFS_POWER_PREMIUM) or (edge[1] in MDFS_POWER_PREMIUM)):
                 return
             if add_pls_weights and self.plspm:
-                wt = self.plspm.GetPathCoef(edge)
+                wt = self.plspm.GetPathCoef(*edge)
                 graph.add_edge(*edge, label='{:.2f}'.format(wt), penwidth=wt * 10)
             else:
                 graph.add_edge(*edge)
@@ -361,8 +411,13 @@ class GraphicModel:
         sub_graph = pgv.AGraph(directed=True)
         
         for n in node: 
-            _walk_down(n, lambda x: _add_edge(x, sub_graph))
-            _walk_up(  n, lambda x: _add_edge(x, sub_graph))
+            _walk_down(n, func=lambda x: _add_edge(x, sub_graph))
+            _walk_up(  n, func=lambda x: _add_edge(x, sub_graph))
+
+            # если узел изолирован (циклов нет, связей нет), sub_graph.get_node(n) может выдать ошибку.
+            # Безопаснее сначала добавить узел явно, если его там нет.
+            if n not in sub_graph:
+                sub_graph.add_node(n)
 
             key_node = sub_graph.get_node(n)
             key_node.attr['style'] = 'filled'
@@ -371,25 +426,6 @@ class GraphicModel:
             key_node.attr['fontsize'] = 24
 
         return sub_graph
-    
-    def __PathLen(self, start_node: str, end_node: str) -> float:
-        assert self.plspm, "Model not fit. Run .Fit... first"
-        assert isinstance(end_node, str), \
-            "GraphicModel.PathLen: Wrong end_node definition {}, must be str".format(end_node)
-        
-        total_route_len = 0
-        
-        def _walk_down(from_: str, carry):
-            nonlocal total_route_len
-            for to_ in self.model_spec.OutEdges(from_):
-                carry_to_pass = carry * self.plspm.GetPathCoef((from_, to_))
-                if to_ == end_node: 
-                    total_route_len += carry_to_pass
-                else:
-                    _walk_down(to_, carry_to_pass)
-
-        _walk_down(start_node, 1)
-        return total_route_len
     
 
     def PathLen(self, start_node: str, end_node: str) -> float:
@@ -411,7 +447,7 @@ class GraphicModel:
                 if to_ in current_visited:
                     continue
                     
-                carry_to_pass = carry * self.plspm.GetPathCoef((from_, to_))
+                carry_to_pass = carry * self.plspm.GetPathCoef(from_, to_)
                 
                 if to_ == end_node: 
                     total_route_len += carry_to_pass
