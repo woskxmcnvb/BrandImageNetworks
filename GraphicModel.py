@@ -156,6 +156,26 @@ class ModelSpec:
     def Edges(self, include_type=False) -> List[Tuple[str, str, str]]:
         return [e.AsTouple(include_type=include_type) for e in self.edges]
     
+    def HasEdge(self, edge: Tuple)-> bool:
+        if len(edge) == 2: 
+            return edge in self.Edges(include_type=False)
+        elif len(edge) == 3: 
+            from_, to_, type_ = edge
+            edges_ = self.Edges(include_type=True)
+            if type_ == EDGE_TYPE_CORR:
+                return ((from_, to_, type_) in edges_) or ((to_, from_, type_) in edges_)
+            else:
+                return edge in edges_
+        else:
+            raise ValueError("Wrong edge def")
+        
+    def TypeOfEdge(self, edge: Tuple[str, str])-> str | None:
+        if len(edge) != 2:
+            raise ValueError("TypeOfEdge: worng edge def")
+        for from_, to_, type_ in self.Edges(include_type=True):
+            if (edge == (from_, to_)) or (edge == (to_, from_)):
+                return type_
+    
     def ToDF(self):
         return pd.DataFrame(self.Edges(include_type=True), columns=[FROM_KEY, TO_KEY, TYPE_KEY])
     
@@ -376,18 +396,20 @@ class GraphicModel:
                 graph.add_edge(from_, to_, dir=dir_, style=style_)
         return graph
     
-    def _walk(self, node: str, get_neighbors, is_downstream: bool, func: Callable, visited_edges: Set[str]):
+    def _walk(self, node: str, get_neighbors, is_downstream: bool, func: Callable, visited_edges: Set[str], stop_nodes: List[str]=[]):
         for linked_node in get_neighbors(node):
+            if linked_node in stop_nodes:
+                continue
             edge = (node, linked_node) if is_downstream else (linked_node, node)
+            type_ = self.model_spec.TypeOfEdge(edge)
+            edge = (edge[0], edge[1], type_)
             if edge not in visited_edges:
                 func(edge)
                 visited_edges.add(edge)
-                #visited_edges.add((node, linked_node))
-                #visited_edges.add((linked_node, node))
-                self._walk(linked_node, get_neighbors, is_downstream, func, visited_edges)
+                self._walk(linked_node, get_neighbors, is_downstream, func, visited_edges, stop_nodes)
     
 
-    def SubgraphFromNodes(self, node: str | List[str], add_pls_weights=True, exclude_mdf=True): 
+    def SubGraphFromNodes(self, node: str | List[str], go_up: bool=True, go_down: bool=True, add_pls_weights=True, exclude_mdf=True) -> pgv.AGraph: 
         # Множество для хранения уже пройденных РЕБЕР (защита от циклов)
         visited_edges = set()
 
@@ -395,14 +417,28 @@ class GraphicModel:
         _walk_down = partial(self._walk, get_neighbors=self.model_spec.OutEdges, is_downstream=True, visited_edges=visited_edges)
         _walk_up   = partial(self._walk, get_neighbors=self.model_spec.InEdges,  is_downstream=False, visited_edges=visited_edges)
 
-        def _add_edge(edge: Tuple[str], graph: pgv.AGraph):
-            if exclude_mdf and ((edge[0] in MDFS_POWER_PREMIUM) or (edge[1] in MDFS_POWER_PREMIUM)):
+        def _add_edge(edge: Tuple[str, str, str], graph: pgv.AGraph):
+            from_, to_, type_ = edge
+            if graph.has_edge(from_, to_) or graph.has_edge(to_, from_): 
                 return
+            if exclude_mdf and ((from_ in MDFS_POWER_PREMIUM) or (to_ in MDFS_POWER_PREMIUM)):
+                return
+            
+            dir_ = 'both' if type_ == EDGE_TYPE_CORR else None
+            style_ = 'dotted' if type_==EDGE_TYPE_CORR else 'solid'
+
             if add_pls_weights and self.plspm:
                 wt = self.plspm.GetPathCoef(*edge)
-                graph.add_edge(*edge, label='{:.2f}'.format(wt), penwidth=wt * 10)
-            else:
-                graph.add_edge(*edge)
+                # если correlation - то возвращается list - усредняем (потом можно улучшить)
+                if isinstance(wt, list):
+                    wt = sum(wt) / 2
+                label_ = '{:.2f}'.format(wt)
+                penwidth_ = wt * 10
+            else: 
+                label_ = None 
+                penwidth_ = None
+            graph.add_edge(*edge, dir=dir_, label=label_, penwidth=penwidth_, style=style_)
+
         
         if isinstance(node, str): 
             node = [node]
@@ -412,8 +448,19 @@ class GraphicModel:
         sub_graph = pgv.AGraph(directed=True)
         
         for n in node: 
-            _walk_down(n, func=lambda x: _add_edge(x, sub_graph))
-            _walk_up(  n, func=lambda x: _add_edge(x, sub_graph))
+            """if go_down and go_up:
+                _walk_down(n, func=lambda x: _add_edge(x, sub_graph))
+                _walk_up(  n, func=lambda x: _add_edge(x, sub_graph))
+            elif go_down:
+                # для того чтобы предотвратить возврат на начальную ноду - так красивее граф
+                _walk_down(n, func=lambda x: _add_edge(x, sub_graph), stop_nodes=node)
+            if go_up:
+                _walk_up(  n, func=lambda x: _add_edge(x, sub_graph), stop_nodes=node)"""
+            
+            if go_down:
+                _walk_down(n, func=lambda x: _add_edge(x, sub_graph))
+            if go_up:
+                _walk_up(  n, func=lambda x: _add_edge(x, sub_graph))
 
             # если узел изолирован (циклов нет, связей нет), sub_graph.get_node(n) может выдать ошибку.
             # Безопаснее сначала добавить узел явно, если его там нет.

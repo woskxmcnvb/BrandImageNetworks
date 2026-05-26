@@ -377,9 +377,19 @@ class ImageStructureAnalysis:
             if (node in MDFS) or (node in POWER_PREMIUM) or (node in self.model_targets):
                 continue
             reporter.AddImage(
-                PlotGraph(self.bsa_models[spec_name].SubgraphFromNodes(node)), 
+                PlotGraph(self.bsa_models[spec_name].SubGraphFromNodes(node)), 
                 node
-        )
+            )
+            reporter.AddImage(
+                PlotGraph(self.bsa_models[spec_name].SubGraphFromNodes(node, go_down=False)), 
+                node, 
+                position='AA1'
+            )
+            reporter.AddImage(
+                PlotGraph(self.bsa_models[spec_name].SubGraphFromNodes(node, go_up=False)), 
+                node, 
+                position='BB1'
+            )
 
         reporter.SaveToFile()
         print("Info: model {} complete".format(spec_name))
