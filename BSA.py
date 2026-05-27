@@ -376,18 +376,23 @@ class ImageStructureAnalysis:
         for node in self.bsa_models[spec_name].model_spec.Nodes():
             if (node in MDFS) or (node in POWER_PREMIUM) or (node in self.model_targets):
                 continue
+            reporter.AddTable(
+                table=pd.DataFrame(self.bsa_models[spec_name].PathLenFromAllNodes(node)), 
+                page_name=node
+            )
             reporter.AddImage(
                 PlotGraph(self.bsa_models[spec_name].SubGraphFromNodes(node)), 
-                node
+                page_name=node, 
+                position='c1'
             )
             reporter.AddImage(
                 PlotGraph(self.bsa_models[spec_name].SubGraphFromNodes(node, go_down=False)), 
-                node, 
+                page_name=node, 
                 position='AA1'
             )
             reporter.AddImage(
                 PlotGraph(self.bsa_models[spec_name].SubGraphFromNodes(node, go_up=False)), 
-                node, 
+                page_name=node, 
                 position='BB1'
             )
 
